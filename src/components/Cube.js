@@ -16,9 +16,9 @@ import {
   Plane as ThreePlane,
   Audio,
   AudioListener,
-  AudioLoader
+  AudioLoader,
+  CanvasTexture
 } from 'three';
-import { Text } from '@react-three/drei';
 import { useSpring, animated } from '@react-spring/three';
 
 // Sonidos
@@ -54,32 +54,64 @@ function PuzzlePiece({
   const dropSound = useMemo(() => new Audio(audioListener), [audioListener]);
   const snapSound = useMemo(() => new Audio(audioListener), [audioListener]);
   
-  // Cargar los sonidos
+  // Función auxiliar para reproducir sonidos de forma segura
+  const playSoundSafely = (sound) => {
+    if (sound && sound.buffer && soundEnabled) {
+      try {
+        // Detener el sonido si ya se está reproduciendo
+        if (sound.isPlaying) {
+          sound.stop();
+        }
+        sound.play();
+      } catch (error) {
+        console.warn('Error playing sound:', error);
+      }
+    }
+  };
+  
+  // Cargar los sonidos con manejo de errores
   useEffect(() => {
     if (!soundEnabled) return;
     
     const audioLoader = new AudioLoader();
     
-    audioLoader.load(SOUNDS.PICK, (buffer) => {
-      pickSound.setBuffer(buffer);
-      pickSound.setVolume(0.5);
-    });
+    // Función de ayuda para cargar sonidos con manejo de errores
+    const loadSoundSafely = (url, audioObject, volume) => {
+      try {
+        audioLoader.load(
+          url, 
+          (buffer) => {
+            audioObject.setBuffer(buffer);
+            audioObject.setVolume(volume);
+          },
+          () => {}, // onProgress (vacío)
+          (error) => {
+            console.warn(`Error loading sound ${url}:`, error);
+          }
+        );
+      } catch (error) {
+        console.warn(`Error setting up sound ${url}:`, error);
+      }
+    };
     
-    audioLoader.load(SOUNDS.DROP, (buffer) => {
-      dropSound.setBuffer(buffer);
-      dropSound.setVolume(0.5);
-    });
-    
-    audioLoader.load(SOUNDS.SNAP, (buffer) => {
-      snapSound.setBuffer(buffer);
-      snapSound.setVolume(0.7);
-    });
+    // Intentar cargar los sonidos con manejo de errores
+    loadSoundSafely(SOUNDS.PICK, pickSound, 0.5);
+    loadSoundSafely(SOUNDS.DROP, dropSound, 0.5);
+    loadSoundSafely(SOUNDS.SNAP, snapSound, 0.7);
     
     // Añadir el listener a la cámara
-    camera.add(audioListener);
+    try {
+      camera.add(audioListener);
+    } catch (error) {
+      console.warn('Error adding audio listener to camera:', error);
+    }
     
     return () => {
-      camera.remove(audioListener);
+      try {
+        camera.remove(audioListener);
+      } catch (error) {
+        console.warn('Error removing audio listener from camera:', error);
+      }
     };
   }, [audioListener, camera, pickSound, dropSound, snapSound, soundEnabled]);
   
@@ -319,9 +351,7 @@ function PuzzlePiece({
       });
       
       // Sonar el efecto de snap
-      if (snapSound.buffer && soundEnabled) {
-        snapSound.play();
-      }
+      playSoundSafely(snapSound);
     }
   }, [isSnapped, api, snapSound, soundEnabled]);
   
@@ -354,9 +384,7 @@ function PuzzlePiece({
     setIsDragging(true);
     
     // Reproducir sonido al levantar la pieza
-    if (pickSound.buffer && soundEnabled) {
-      pickSound.play();
-    }
+    playSoundSafely(pickSound);
     
     // Animar la pieza al empezar a arrastrar
     api.start({
@@ -382,9 +410,7 @@ function PuzzlePiece({
       setIsDragging(false);
       
       // Reproducir sonido al soltar la pieza
-      if (dropSound.buffer && soundEnabled) {
-        dropSound.play();
-      }
+      playSoundSafely(dropSound);
       
       // Volver a la escala normal
       api.start({ scale: 1 });
@@ -505,6 +531,52 @@ function PuzzleBox({ width, height, depth, wallHeight, wallThickness, position }
   );
 }
 
+// Función para crear una textura de texto
+function createTextTexture(text, textColor = '#ffffff', bgColor = null, fontSize = 24) {
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  
+  // Establecer dimensiones para que el texto sea nítido
+  canvas.width = 256;
+  canvas.height = 128;
+  
+  // Aplicar fondo si se especifica
+  if (bgColor) {
+    context.fillStyle = bgColor;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  } else {
+    context.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  
+  // Configurar el estilo del texto
+  context.font = `bold ${fontSize}px Arial, sans-serif`;
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillStyle = textColor;
+  
+  // Dibujar el texto centrado
+  context.fillText(text, canvas.width / 2, canvas.height / 2);
+  
+  // Crear textura a partir del canvas
+  const texture = new CanvasTexture(canvas);
+  texture.needsUpdate = true;
+  
+  return texture;
+}
+
+// Componente para mostrar texto como mesh con textura
+function TextPlane({ text, position, scale = [1, 0.4, 1], fontSize = 24, textColor = '#ffffff', bgColor = null }) {
+  // Crear textura del texto
+  const texture = useMemo(() => createTextTexture(text, textColor, bgColor, fontSize), [text, textColor, bgColor, fontSize]);
+  
+  return (
+    <mesh position={position} scale={scale}>
+      <planeGeometry args={[1, 1]} />
+      <meshBasicMaterial map={texture} transparent />
+    </mesh>
+  );
+}
+
 // Componente para el mensaje de victoria
 function VictoryMessage({ visible, onRestart }) {
   // Animaciones con spring
@@ -548,24 +620,18 @@ function VictoryMessage({ visible, onRestart }) {
       </animated.mesh>
       
       <animated.group scale={spring.scale} position={[0, 0, 0.01]}>
-        <Text
+        <TextPlane
+          text="¡PUZZLE COMPLETADO!"
           position={[0, 0.3, 0]}
-          fontSize={0.5}
-          color="#ffffff"
-          anchorX="center"
-          anchorY="middle"
-        >
-          ¡PUZZLE COMPLETADO!
-        </Text>
-        <Text
+          scale={[5, 0.8, 1]}
+          fontSize={36}
+        />
+        <TextPlane
+          text="Haz clic para reiniciar"
           position={[0, -0.3, 0]}
-          fontSize={0.25}
-          color="#dddddd"
-          anchorX="center"
-          anchorY="middle"
-        >
-          Haz clic para reiniciar
-        </Text>
+          scale={[4, 0.5, 1]}
+          fontSize={22}
+        />
       </animated.group>
     </group>
   );
@@ -583,20 +649,66 @@ function Cube() {
   const audioListener = useMemo(() => new AudioListener(), []);
   const victorySound = useMemo(() => new Audio(audioListener), [audioListener]);
   
-  // Cargar sonido de victoria
+  // Función auxiliar para reproducir sonidos de forma segura
+  const playSoundSafely = (sound, delay = 0) => {
+    if (sound && sound.buffer && soundEnabled) {
+      try {
+        if (delay) {
+          setTimeout(() => {
+            if (sound.isPlaying) {
+              sound.stop();
+            }
+            sound.play();
+          }, delay);
+        } else {
+          if (sound.isPlaying) {
+            sound.stop();
+          }
+          sound.play();
+        }
+      } catch (error) {
+        console.warn('Error playing sound:', error);
+      }
+    }
+  };
+  
+  // Cargar sonido de victoria con manejo de errores
   useEffect(() => {
     if (!soundEnabled) return;
     
     const audioLoader = new AudioLoader();
-    audioLoader.load(SOUNDS.VICTORY, (buffer) => {
-      victorySound.setBuffer(buffer);
-      victorySound.setVolume(0.7);
-    });
+    const loadSoundSafely = (url, audioObject, volume) => {
+      try {
+        audioLoader.load(
+          url, 
+          (buffer) => {
+            audioObject.setBuffer(buffer);
+            audioObject.setVolume(volume);
+          },
+          () => {}, // onProgress (vacío)
+          (error) => {
+            console.warn(`Error loading victory sound:`, error);
+          }
+        );
+      } catch (error) {
+        console.warn(`Error setting up victory sound:`, error);
+      }
+    };
     
-    camera.add(audioListener);
+    loadSoundSafely(SOUNDS.VICTORY, victorySound, 0.7);
+    
+    try {
+      camera.add(audioListener);
+    } catch (error) {
+      console.warn('Error adding audio listener to camera:', error);
+    }
     
     return () => {
-      camera.remove(audioListener);
+      try {
+        camera.remove(audioListener);
+      } catch (error) {
+        console.warn('Error removing audio listener from camera:', error);
+      }
     };
   }, [camera, audioListener, victorySound, soundEnabled]);
   
@@ -747,11 +859,9 @@ function Cube() {
       setPuzzleCompleted(true);
       
       // Reproducir sonido de victoria
-      if (victorySound.buffer && soundEnabled) {
-        setTimeout(() => victorySound.play(), 500);
-      }
+      playSoundSafely(victorySound, 500);
     }
-  }, [snappedPieces, puzzleCompleted, victorySound, soundEnabled]);
+  }, [snappedPieces, puzzleCompleted, victorySound, soundEnabled, playSoundSafely]);
   
   // Función para comprobar si las piezas encajan entre sí
   const checkPiecesConnection = useCallback((pieceA, pieceB) => {
@@ -827,6 +937,12 @@ function Cube() {
     setPieces([]);
   }, []);
 
+  // Función para alternar el sonido
+  const toggleSound = useCallback((e) => {
+    e.stopPropagation();
+    setSoundEnabled(prev => !prev);
+  }, []);
+
   return (
     <group>
       {/* Caja del puzzle (posicionada a la izquierda) */}
@@ -863,6 +979,20 @@ function Cube() {
         visible={puzzleCompleted} 
         onRestart={handleRestart}
       />
+      
+      {/* Botón para activar/desactivar sonido - reemplazado con nuestro TextPlane */}
+      <group position={[5, 0.5, -3]} onClick={toggleSound}>
+        <mesh>
+          <planeGeometry args={[1, 0.4]} />
+          <meshBasicMaterial color={soundEnabled ? 0x00aaff : 0x555555} transparent opacity={0.8} />
+        </mesh>
+        <TextPlane
+          text={soundEnabled ? "Sonido: ON" : "Sonido: OFF"}
+          position={[0, 0, 0.01]}
+          scale={[0.9, 0.3, 1]}
+          fontSize={18}
+        />
+      </group>
     </group>
   );
 }
