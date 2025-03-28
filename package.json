@@ -9,7 +9,7 @@
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
     "socket.io-client": "^4.8.1",
-    "three": "^0.156.1"
+    "three": "^0.175.0"
   },
   "scripts": {
     "start": "react-scripts start",
