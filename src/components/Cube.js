@@ -23,11 +23,21 @@ import { useSpring, animated } from '@react-spring/three';
 
 // Sonidos
 const SOUNDS = {
-  PICK: '/sounds/pick.mp3',
-  DROP: '/sounds/drop.mp3',
-  SNAP: '/sounds/snap.mp3',
-  VICTORY: '/sounds/victory.mp3'
+  PICK: '/sounds/cartoon-jump-6462.mp3',     // Sonido al levantar una pieza
+  DROP: '',   // Sin sonido al soltar una pieza
+  SNAP: '/sounds/coin-recieved-230517.mp3',   // Sonido al encajar una pieza
+  VICTORY: '/sounds/winning-218995.mp3'        // Sonido al completar el puzzle
 };
+
+// Verificar si un formato de audio es compatible con el navegador
+function isAudioFormatSupported(format) {
+  const audio = document.createElement('audio');
+  return audio.canPlayType && audio.canPlayType(format).replace(/no/, '');
+}
+
+// Comprobamos compatibilidad con MP3
+const isMp3Supported = isAudioFormatSupported('audio/mpeg');
+console.log('MP3 support:', isMp3Supported ? 'Supported' : 'Not supported');
 
 // Componente para una pieza individual del puzzle
 function PuzzlePiece({ 
@@ -56,16 +66,22 @@ function PuzzlePiece({
   
   // Función auxiliar para reproducir sonidos de forma segura
   const playSoundSafely = (sound) => {
-    if (sound && sound.buffer && soundEnabled) {
-      try {
-        // Detener el sonido si ya se está reproduciendo
-        if (sound.isPlaying) {
-          sound.stop();
-        }
-        sound.play();
-      } catch (error) {
-        console.warn('Error playing sound:', error);
+    if (!sound || !soundEnabled) return;
+    
+    try {
+      // Verificar que el sonido tenga un buffer
+      if (!sound.buffer) {
+        console.warn('No sound buffer available');
+        return;
       }
+      
+      // Detener el sonido si ya se está reproduciendo
+      if (sound.isPlaying) {
+        sound.stop();
+      }
+      sound.play();
+    } catch (error) {
+      console.warn('Error playing sound:', error);
     }
   };
   
@@ -78,13 +94,29 @@ function PuzzlePiece({
     // Función de ayuda para cargar sonidos con manejo de errores
     const loadSoundSafely = (url, audioObject, volume) => {
       try {
+        if (!isMp3Supported) {
+          console.warn('MP3 format not supported by this browser');
+          return;
+        }
+        
         audioLoader.load(
           url, 
           (buffer) => {
-            audioObject.setBuffer(buffer);
-            audioObject.setVolume(volume);
+            try {
+              audioObject.setBuffer(buffer);
+              audioObject.setVolume(volume);
+              console.log(`Sound loaded successfully: ${url}`);
+            } catch (error) {
+              console.warn(`Error setting buffer for ${url}:`, error);
+            }
           },
-          () => {}, // onProgress (vacío)
+          (progress) => {
+            // Opcional: mostrar progreso de carga
+            if (progress.lengthComputable) {
+              const percentComplete = progress.loaded / progress.total * 100;
+              console.log(`Loading sound ${url}: ${Math.round(percentComplete)}%`);
+            }
+          },
           (error) => {
             console.warn(`Error loading sound ${url}:`, error);
           }
@@ -651,24 +683,24 @@ function Cube() {
   
   // Función auxiliar para reproducir sonidos de forma segura
   const playSoundSafely = (sound, delay = 0) => {
-    if (sound && sound.buffer && soundEnabled) {
-      try {
-        if (delay) {
-          setTimeout(() => {
-            if (sound.isPlaying) {
-              sound.stop();
-            }
-            sound.play();
-          }, delay);
-        } else {
+    if (!sound || !soundEnabled) return;
+    
+    try {
+      if (delay) {
+        setTimeout(() => {
           if (sound.isPlaying) {
             sound.stop();
           }
           sound.play();
+        }, delay);
+      } else {
+        if (sound.isPlaying) {
+          sound.stop();
         }
-      } catch (error) {
-        console.warn('Error playing sound:', error);
+        sound.play();
       }
+    } catch (error) {
+      console.warn('Error playing sound:', error);
     }
   };
   
@@ -679,13 +711,29 @@ function Cube() {
     const audioLoader = new AudioLoader();
     const loadSoundSafely = (url, audioObject, volume) => {
       try {
+        if (!isMp3Supported) {
+          console.warn('MP3 format not supported by this browser');
+          return;
+        }
+        
         audioLoader.load(
           url, 
           (buffer) => {
-            audioObject.setBuffer(buffer);
-            audioObject.setVolume(volume);
+            try {
+              audioObject.setBuffer(buffer);
+              audioObject.setVolume(volume);
+              console.log(`Victory sound loaded successfully`);
+            } catch (error) {
+              console.warn(`Error setting buffer for victory sound:`, error);
+            }
           },
-          () => {}, // onProgress (vacío)
+          (progress) => {
+            // Opcional: mostrar progreso de carga
+            if (progress.lengthComputable) {
+              const percentComplete = progress.loaded / progress.total * 100;
+              console.log(`Loading victory sound: ${Math.round(percentComplete)}%`);
+            }
+          },
           (error) => {
             console.warn(`Error loading victory sound:`, error);
           }
@@ -980,17 +1028,19 @@ function Cube() {
         onRestart={handleRestart}
       />
       
-      {/* Botón para activar/desactivar sonido - reemplazado con nuestro TextPlane */}
-      <group position={[5, 0.5, -3]} onClick={toggleSound}>
+      {/* Botón para activar/desactivar sonido - con mejor visibilidad */}
+      <group position={[4.5, 2, -1]} onClick={toggleSound}>
         <mesh>
-          <planeGeometry args={[1, 0.4]} />
-          <meshBasicMaterial color={soundEnabled ? 0x00aaff : 0x555555} transparent opacity={0.8} />
+          <planeGeometry args={[1.2, 0.5]} />
+          <meshBasicMaterial color={soundEnabled ? 0x00aa00 : 0xff0000} transparent opacity={0.9} />
         </mesh>
         <TextPlane
           text={soundEnabled ? "Sonido: ON" : "Sonido: OFF"}
           position={[0, 0, 0.01]}
-          scale={[0.9, 0.3, 1]}
-          fontSize={18}
+          scale={[1, 0.4, 1]}
+          fontSize={20}
+          textColor={soundEnabled ? "#ffffff" : "#ffffff"}
+          bgColor={null}
         />
       </group>
     </group>
