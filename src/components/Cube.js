@@ -541,8 +541,10 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
      // Find all pieces in the same group
      pieces.forEach((p, i) => {
        if (p.groupId === groupId) {
-         // Calculate offset of each piece in the group relative to the base piece
-         const offset = new Vector3().subVectors(basePiece.position, p.position);
+         // Calculate offset de cada pieza relativo a la pieza base
+         // Offset = posición_base - posición_pieza
+         // Esto representa cuánto hay que mover desde la pieza actual para llegar a la base
+         const offset = new Vector3().subVectors(p.position, basePiece.position);
          groupMemberOffsets[i] = offset;
          initialTargetPositions[i] = p.position.clone(); // Start targets at current positions
        }
@@ -574,13 +576,18 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
      const dragElevation = 0.3; 
      const newBasePos = new Vector3(newBasePosX, dragElevation, newBasePosZ);
 
-     // Calculate target positions for all members based on the new base position and relative offsets
+     // Primero establecemos la posición de la pieza base
+     newTargetPositions[basePieceIndex] = newBasePos.clone();
+
+     // Luego calculamos las posiciones de las demás piezas usando los offsets relativos
      Object.keys(offsets).forEach(indexStr => {
         const index = parseInt(indexStr, 10);
+        if (index === basePieceIndex) return; // Ya establecimos la pieza base arriba
+         
         const relativeOffset = offsets[index];
-        // Ensure the offset doesn't affect the elevation during drag
+        // Añadimos el offset a la posición base - las piezas mantienen su posición relativa
         const targetPos = new Vector3().addVectors(newBasePos, relativeOffset);
-        targetPos.y = dragElevation; // Maintain consistent elevation for all pieces in the group
+        targetPos.y = dragElevation; // Mantener misma elevación para todas las piezas
         newTargetPositions[index] = targetPos;
      });
 
@@ -674,10 +681,25 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   
   // Reiniciar el juego
   const handleRestart = useCallback(() => {
+    console.log("Ejecutando handleRestart en Cube");
+    
+    // Primero resetear flags de estado
     setPuzzleCompleted(false);
     setSnappedPieces({});
-    setPieces([]); // Clear pieces, useEffect will re-initialize
-    setDraggedGroupInfo({ isActive: false, groupId: null, basePieceIndex: null, pointerOffset: new Vector3(), offsets: {}, targetPositions: {} }); // Reset drag state
+    
+    // Luego, en el siguiente ciclo, limpiar las piezas para forzar reinicialización
+    setTimeout(() => {
+      setPieces([]); // Clear pieces, useEffect will re-initialize
+      // Reset drag info to default state
+      setDraggedGroupInfo({ 
+        isActive: false, 
+        groupId: null, 
+        basePieceIndex: null, 
+        pointerOffset: new Vector3(), 
+        offsets: {}, 
+        targetPositions: {} 
+      });
+    }, 10);
   }, [setPuzzleCompleted]);
   
   // Comprobar si el puzzle está completo
@@ -706,6 +728,22 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
       }
     }
   }, [pieces, puzzleCompleted, victorySound, playSoundSafely, setPuzzleCompleted]);
+
+  // Escuchar evento externo de reseteo del puzzle
+  useEffect(() => {
+    const handleResetEvent = () => {
+      console.log("Recibido evento de reseteo del puzzle");
+      handleRestart();
+    };
+    
+    // Agregar el event listener
+    window.addEventListener('resetPuzzle', handleResetEvent);
+    
+    // Limpiar al desmontar
+    return () => {
+      window.removeEventListener('resetPuzzle', handleResetEvent);
+    };
+  }, [handleRestart]);
 
   return (
     <group>

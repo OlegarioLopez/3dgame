@@ -13,7 +13,14 @@ function App() {
   
   // Manejadores de eventos compartidos
   const handleRestart = useCallback(() => {
+    // Forzar reseteo completo del puzzle
     setPuzzleCompleted(false);
+    
+    // Usar un pequeño retraso para asegurar que el componente Cube reciba el cambio de estado
+    setTimeout(() => {
+      const cubeEvent = new CustomEvent('resetPuzzle');
+      window.dispatchEvent(cubeEvent);
+    }, 50);
   }, []);
   
   const toggleSound = useCallback(() => {
