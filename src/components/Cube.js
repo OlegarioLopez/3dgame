@@ -20,12 +20,23 @@ const SOUNDS = {
 
 // Mapa de vecinos: define qué piezas son vecinas legítimas
 const pieceNeighborsMap = {
-  0: { right: 1, bottom: 3 }, // pieza 0 tiene pieza 1 a su derecha y pieza 3 debajo
-  1: { left: 0, right: 2, bottom: 4 }, // pieza 1 tiene pieza 0 a su izquierda, pieza 2 a su derecha y pieza 4 debajo
-  2: { left: 1, bottom: 5 }, // pieza 2 tiene pieza 1 a su izquierda y pieza 5 debajo
-  3: { top: 0, right: 4 }, // pieza 3 tiene pieza 0 arriba y pieza 4 a su derecha
-  4: { left: 3, right: 5, top: 1 }, // pieza 4 tiene pieza 3 a su izquierda, pieza 5 a su derecha y pieza 1 arriba
-  5: { left: 4, top: 2 } // pieza 5 tiene pieza 4 a su izquierda y pieza 2 arriba
+  // Primera fila (0-3)
+  0: { right: 1, bottom: 4 },
+  1: { left: 0, right: 2, bottom: 5 },
+  2: { left: 1, right: 3, bottom: 6 },
+  3: { left: 2, bottom: 7 },
+  
+  // Segunda fila (4-7)
+  4: { top: 0, right: 5, bottom: 8 },
+  5: { top: 1, left: 4, right: 6, bottom: 9 },
+  6: { top: 2, left: 5, right: 7, bottom: 10 },
+  7: { top: 3, left: 6, bottom: 11 },
+  
+  // Tercera fila (8-11)
+  8: { top: 4, right: 9 },
+  9: { top: 5, left: 8, right: 10 },
+  10: { top: 6, left: 9, right: 11 },
+  11: { top: 7, left: 10 }
 };
 
 // Función para verificar si dos piezas son vecinas legítimas
@@ -118,30 +129,41 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   // --- End Sound Management ---
 
   // Configuración del puzzle
-  const puzzleWidth = 4;
-  const puzzleHeight = 3;
-  const gapSize = 0.2; // Aumentado el espacio entre piezas
+  const puzzleWidth = 6;  // Aumentado para 4 columnas
+  const puzzleHeight = 4.5;  // Aumentado para 3 filas
+  const gapSize = 0.2; // Espacio entre piezas
   
-  // Dimensiones de cada pieza (2x3 grid)
-  const pieceWidth = (puzzleWidth - gapSize) / 3;
-  const pieceHeight = (puzzleHeight - gapSize) / 2;
+  // Dimensiones de cada pieza (4x3 grid)
+  const pieceWidth = (puzzleWidth - gapSize) / 4;
+  const pieceHeight = (puzzleHeight - gapSize) / 3;
   
   // Posición central de la caja del puzzle
   const puzzleBoxPos = useMemo(() => new Vector3(0, 0, 0), []);
   const puzzleBoxDim = useMemo(() => ({ width: puzzleWidth, height: puzzleHeight }), [puzzleWidth, puzzleHeight]);
   
-  // Posiciones correctas de las piezas en la caja (izquierda)
+  // Posiciones correctas de las piezas en la caja
   const correctPositions = useMemo(() => {
-    return [
-      new Vector3(puzzleBoxPos.x - pieceWidth, 0.101, puzzleBoxPos.z - pieceHeight / 2), // Pieza 0 (Top-Left)
-      new Vector3(puzzleBoxPos.x, 0.101, puzzleBoxPos.z - pieceHeight / 2),             // Pieza 1 (Top-Center)
-      new Vector3(puzzleBoxPos.x + pieceWidth, 0.101, puzzleBoxPos.z - pieceHeight / 2), // Pieza 2 (Top-Right)
-      
-      // Fila inferior (de izquierda a derecha)
-      new Vector3(puzzleBoxPos.x - pieceWidth, 0.101, puzzleBoxPos.z + pieceHeight / 2), // Pieza 3 (Bottom-Left)
-      new Vector3(puzzleBoxPos.x, 0.101, puzzleBoxPos.z + pieceHeight / 2),             // Pieza 4 (Bottom-Center)
-      new Vector3(puzzleBoxPos.x + pieceWidth, 0.101, puzzleBoxPos.z + pieceHeight / 2)  // Pieza 5 (Bottom-Right)
-    ];
+    // Calculamos el ancho y alto total del puzzle
+    const puzzleTotalWidth = pieceWidth * 4;
+    const puzzleTotalHeight = pieceHeight * 3;
+    
+    // Posición inicial (esquina superior izquierda)
+    const startX = puzzleBoxPos.x - puzzleTotalWidth/2 + pieceWidth/2;
+    const startZ = puzzleBoxPos.z - puzzleTotalHeight/2 + pieceHeight/2;
+    
+    // Array para las 12 posiciones (4x3 grid)
+    const positions = [];
+    
+    // Generamos las posiciones en un grid de 4x3
+    for (let row = 0; row < 3; row++) {
+      for (let col = 0; col < 4; col++) {
+        const x = startX + col * pieceWidth;
+        const z = startZ + row * pieceHeight;
+        positions.push(new Vector3(x, 0.101, z));
+      }
+    }
+    
+    return positions;
   }, [pieceWidth, pieceHeight, puzzleBoxPos]);
   
   // Colores para las piezas (caras laterales)
@@ -151,45 +173,60 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
     0x0000ff, // azul
     0xffff00, // amarillo
     0xff00ff, // magenta
-    0x00ffff  // cian
+    0x00ffff, // cian
+    0xff8000, // naranja
+    0x8000ff, // púrpura
+    0x00ff80, // verde menta
+    0x0080ff, // azul celeste
+    0x808080, // gris
+    0xffffff  // blanco
   ];
   
   // Definir las conexiones entre piezas
   // 1 = protuberancia, -1 = hendidura, 0 = borde recto
   const connectionsMap = [
-    // Fila superior (de izquierda a derecha)
-    { left: 0, right: 1, top: 0, bottom: 1 },    // Pieza 0
-    { left: -1, right: 1, top: 0, bottom: -1 },  // Pieza 1
-    { left: -1, right: 0, top: 0, bottom: 1 },   // Pieza 2
+    // Primera fila (0-3)
+    { left: 0, right: -1, top: 0, bottom: 1 },    // Pieza 0
+    { left: 1, right: -1, top: 0, bottom: -1 },   // Pieza 1
+    { left: 1, right: -1, top: 0, bottom: 1 },    // Pieza 2
+    { left: 1, right: 0, top: 0, bottom: -1 },    // Pieza 3
     
-    // Fila inferior (de izquierda a derecha)
-    { left: 0, right: -1, top: -1, bottom: 0 },  // Pieza 3
-    { left: 1, right: -1, top: 1, bottom: 0 },   // Pieza 4
-    { left: 1, right: 0, top: -1, bottom: 0 }    // Pieza 5
+    // Segunda fila (4-7)
+    { left: 0, right: 1, top: -1, bottom: 1 },    // Pieza 4
+    { left: -1, right: 1, top: 1, bottom: -1 },   // Pieza 5
+    { left: -1, right: 1, top: -1, bottom: 1 },   // Pieza 6
+    { left: -1, right: 0, top: 1, bottom: -1 },   // Pieza 7
+    
+    // Tercera fila (8-11)
+    { left: 0, right: -1, top: -1, bottom: 0 },   // Pieza 8
+    { left: 1, right: -1, top: 1, bottom: 0 },    // Pieza 9
+    { left: 1, right: -1, top: -1, bottom: 0 },   // Pieza 10
+    { left: 1, right: 0, top: 1, bottom: 0 }      // Pieza 11
   ];
   
   // Inicializar las piezas si es necesario
   useEffect(() => {
     // Check if pieces need initialization (e.g., empty or after reset)
     if (pieces.length === 0 && !puzzleCompleted) { // Added !puzzleCompleted check to avoid re-init after win
+      console.log("Inicializando piezas del puzzle");
       // Crear las piezas con posiciones aleatorias
-      const initialPieces = Array.from({ length: 6 }).map((_, i) => {
+      const initialPieces = Array.from({ length: 12 }).map((_, i) => {
          // Crear una distribución circular alrededor del tablero
-         const angle = (i * Math.PI / 3) + (Math.random() * 0.5); // Distribuir en un círculo con algo de aleatoriedad
-         const radius = 4 + Math.random() * 1.5; // Distancia desde el centro
+         const angle = (i * Math.PI / 6) + (Math.random() * 0.5); // 12 piezas = 2π/12 = π/6 por pieza
+         const radius = 5 + Math.random() * 1.5; // Distancia desde el centro
          
          // Calcular posición en coordenadas cartesianas
          const spawnX = Math.cos(angle) * radius;
          const spawnZ = Math.sin(angle) * radius;
          
-         const isTopRow = i < 3;
-         const colIndex = i % 3;
-         const rowIndex = isTopRow ? 0 : 1;
+         // Calcular fila y columna para la textura
+         const rowIndex = Math.floor(i / 4); // 0, 1 o 2 para las tres filas
+         const colIndex = i % 4; // 0, 1, 2 o 3 para las cuatro columnas
 
          return {
             // Keep original props
-            textureOffset: new Vector2(colIndex / 3, rowIndex / 2),
-            textureSize: new Vector2(1/3, 1/2),
+            textureOffset: new Vector2(colIndex / 4, rowIndex / 3),
+            textureSize: new Vector2(1/4, 1/3),
             size: {x: pieceWidth, y: pieceHeight},
             color: colors[i],
             connections: connectionsMap[i],
@@ -289,6 +326,15 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
                     
                     console.log(`Horizontal check with piece ${neighborIndex} (${direction}): distance=${horizontalDistance}, tolerance=${horizontalTolerance}, minDistance=${minHorizontalDistance}`);
                     
+                    // Verificar que la pieza esté en el lado correcto según la matriz
+                    const isCorrectSide = (direction === 'left' && vecToPiece.x > 0) || 
+                                         (direction === 'right' && vecToPiece.x < 0);
+                    
+                    if (!isCorrectSide) {
+                        console.log(`Skipping snap: piece ${droppedPieceIndex} is not on the correct side (${direction}) of piece ${neighborIndex}`);
+                        return;
+                    }
+                    
                     // Si está dentro de la tolerancia, no demasiado cerca y es mejor que la anterior
                     if (horizontalDistance < horizontalTolerance && 
                         horizontalDistance > minHorizontalDistance &&
@@ -318,6 +364,15 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
                     const verticalDistance = Math.abs(vecToPiece.z);
                     
                     console.log(`Vertical check with piece ${neighborIndex} (${direction}): distance=${verticalDistance}, tolerance=${verticalTolerance}, minDistance=${minVerticalDistance}`);
+                    
+                    // Verificar que la pieza esté en el lado correcto según la matriz
+                    const isCorrectSide = (direction === 'top' && vecToPiece.z < 0) || 
+                                         (direction === 'bottom' && vecToPiece.z > 0);
+                    
+                    if (!isCorrectSide) {
+                        console.log(`Skipping snap: piece ${droppedPieceIndex} is not on the correct side (${direction}) of piece ${neighborIndex}`);
+                        return;
+                    }
                     
                     // Si está dentro de la tolerancia, no demasiado cerca y es mejor que la anterior
                     if (verticalDistance < verticalTolerance && 
@@ -375,6 +430,15 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
                     
                     console.log(`Reverse horizontal check with piece ${otherIndex} (${connectionDirection}): distance=${horizontalDistance}, tolerance=${horizontalTolerance}, minDistance=${minHorizontalDistance}`);
                     
+                    // Verificar que la pieza esté en el lado correcto según la matriz
+                    const isCorrectSide = (connectionDirection === 'left' && vecToPiece.x < 0) || 
+                                         (connectionDirection === 'right' && vecToPiece.x > 0);
+                    
+                    if (!isCorrectSide) {
+                        console.log(`Skipping reverse snap: piece ${droppedPieceIndex} is not on the correct side (${connectionDirection}) of piece ${otherIndex}`);
+                        return;
+                    }
+                    
                     // Añadir verificación de distancia mínima
                     if (horizontalDistance < horizontalTolerance && 
                         horizontalDistance > minHorizontalDistance && 
@@ -400,6 +464,15 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
                     const verticalDistance = Math.abs(vecToPiece.z);
                     
                     console.log(`Reverse vertical check with piece ${otherIndex} (${connectionDirection}): distance=${verticalDistance}, tolerance=${verticalTolerance}, minDistance=${minVerticalDistance}`);
+                    
+                    // Verificar que la pieza esté en el lado correcto según la matriz
+                    const isCorrectSide = (connectionDirection === 'top' && vecToPiece.z > 0) || 
+                                         (connectionDirection === 'bottom' && vecToPiece.z < 0);
+                    
+                    if (!isCorrectSide) {
+                        console.log(`Skipping reverse snap: piece ${droppedPieceIndex} is not on the correct side (${connectionDirection}) of piece ${otherIndex}`);
+                        return;
+                    }
                     
                     // Añadir verificación de distancia mínima
                     if (verticalDistance < verticalTolerance && 
@@ -722,7 +795,7 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
         if (piecesInMainGroup === pieces.length) {
           console.log("¡PUZZLE COMPLETADO desde useEffect!");
           setPuzzleCompleted(true);
-          setSnappedPieces({0: true, 1: true, 2: true, 3: true, 4: true, 5: true});
+          setSnappedPieces({0: true, 1: true, 2: true, 3: true, 4: true, 5: true, 6: true, 7: true, 8: true, 9: true, 10: true, 11: true});
           playSoundSafely(victorySound);
         }
       }
