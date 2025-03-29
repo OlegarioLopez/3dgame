@@ -127,7 +127,7 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   const pieceHeight = (puzzleHeight - gapSize) / 2;
   
   // Posición central de la caja del puzzle
-  const puzzleBoxPos = useMemo(() => new Vector3(-3, 0, 0), []);
+  const puzzleBoxPos = useMemo(() => new Vector3(0, 0, 0), []);
   const puzzleBoxDim = useMemo(() => ({ width: puzzleWidth, height: puzzleHeight }), [puzzleWidth, puzzleHeight]);
   
   // Posiciones correctas de las piezas en la caja (izquierda)
@@ -174,14 +174,17 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
     if (pieces.length === 0 && !puzzleCompleted) { // Added !puzzleCompleted check to avoid re-init after win
       // Crear las piezas con posiciones aleatorias
       const initialPieces = Array.from({ length: 6 }).map((_, i) => {
-         const randomPos = { x: Math.random() * 2 - 1, z: Math.random() * 2 - 1 };
+         // Crear una distribución circular alrededor del tablero
+         const angle = (i * Math.PI / 3) + (Math.random() * 0.5); // Distribuir en un círculo con algo de aleatoriedad
+         const radius = 4 + Math.random() * 1.5; // Distancia desde el centro
+         
+         // Calcular posición en coordenadas cartesianas
+         const spawnX = Math.cos(angle) * radius;
+         const spawnZ = Math.sin(angle) * radius;
+         
          const isTopRow = i < 3;
          const colIndex = i % 3;
          const rowIndex = isTopRow ? 0 : 1;
-         
-         // Determine initial spawn position (example logic, adjust as needed)
-         const spawnX = 3 + colIndex * 1.5 + randomPos.x * 0.5;
-         const spawnZ = -1 + rowIndex * 2 + randomPos.z * 0.5;
 
          return {
             // Keep original props
@@ -518,12 +521,9 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
     if (didSnap && neighborToSnapTo) {
         // Solo reproducir sonido si realmente hizo snap a un vecino
         playSoundSafely(snapSound);
-    } else if (isInsideBox) {
-        // Solo colocada dentro de la caja sin snap
-        playSoundSafely(dropSound);
     }
 
-  }, [pieces, puzzleBoxPos, puzzleBoxDim, pieceWidth, pieceHeight, snapSound, dropSound, playSoundSafely, puzzleCompleted, victorySound]);
+  }, [pieces, puzzleBoxPos, puzzleBoxDim, pieceWidth, pieceHeight, snapSound, playSoundSafely, puzzleCompleted, victorySound]);
 
   // --- Drag Handlers ---
   const handleGroupDragStart = useCallback((index, groupId, pointerIntersection) => {

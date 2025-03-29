@@ -182,6 +182,11 @@ function PuzzlePiece({
     const tempVector = new Vector3();
     const transformMatrix = new Matrix4().makeRotationX(-Math.PI/2);
     
+    // Clasificar las caras para aplicar materiales correctamente
+    // Esto ayudará a determinar qué partes deberían tener la textura
+    const materialGroups = [];
+    let currentMaterial = -1;
+    
     for (let i = 0; i < count; i++) {
       tempVector.set(
         positionAttribute.getX(i),
@@ -192,11 +197,13 @@ function PuzzlePiece({
       // Aplicar transformación para simular la rotación final
       tempVector.applyMatrix4(transformMatrix);
       
-      // Si es la cara superior (que después de rotar será la frontal)
-      const isTopFace = Math.abs(tempVector.y - 0.2) < 0.05;
+      // Detectamos la cara frontal (que es la original con y=0 antes de la extrusión)
+      // y el bisel asociado a esta cara
+      const isFrontFace = Math.abs(tempVector.y) < 0.01; // La cara frontal tiene y ≈ 0
+      const isFrontBevel = tempVector.y > -0.02 && tempVector.y < 0.01; // El bisel de la cara frontal
       
-      if (isTopFace) {
-        // Normalizar las coordenadas al rango 0-1 para esta cara
+      if (isFrontFace || isFrontBevel) {
+        // Normalizar las coordenadas al rango 0-1 para esta cara y el bisel
         const normalizedX = (tempVector.x + size.x/2) / size.x;
         const normalizedZ = (tempVector.z + size.y/2) / size.y;
         
@@ -204,15 +211,53 @@ function PuzzlePiece({
         // esos ajustes se harán en la textura directamente
         uvs[i * 2] = normalizedX;
         uvs[i * 2 + 1] = normalizedZ;
-      } else {
-        // Para las demás caras, usar UVs en el rango 0-1
-        const normalizedX = (tempVector.x + size.x/2) / size.x;
-        const normalizedZ = (tempVector.z + size.y/2) / size.y;
         
-        uvs[i * 2] = normalizedX;
-        uvs[i * 2 + 1] = normalizedZ;
+        // Marcar estos vértices para usar el material 0 (con textura)
+        if (currentMaterial !== 0) {
+          if (currentMaterial !== -1) {
+            // Cerrar el grupo anterior
+            materialGroups[materialGroups.length - 1].count = i - materialGroups[materialGroups.length - 1].start;
+          }
+          // Iniciar nuevo grupo
+          materialGroups.push({
+            start: i,
+            count: 0,
+            materialIndex: 0
+          });
+          currentMaterial = 0;
+        }
+      } else {
+        // Para las demás caras, usar UVs que no mapeen a la textura
+        // Estas coordenadas no importan mucho ya que usarán el material sólido
+        uvs[i * 2] = 0;
+        uvs[i * 2 + 1] = 0;
+        
+        // Marcar estos vértices para usar el material 1 (gris oscuro)
+        if (currentMaterial !== 1) {
+          if (currentMaterial !== -1) {
+            // Cerrar el grupo anterior
+            materialGroups[materialGroups.length - 1].count = i - materialGroups[materialGroups.length - 1].start;
+          }
+          // Iniciar nuevo grupo
+          materialGroups.push({
+            start: i,
+            count: 0,
+            materialIndex: 1
+          });
+          currentMaterial = 1;
+        }
       }
     }
+    
+    // Cerrar el último grupo
+    if (materialGroups.length > 0) {
+      materialGroups[materialGroups.length - 1].count = count - materialGroups[materialGroups.length - 1].start;
+    }
+    
+    // Asignar los grupos de materiales a la geometría
+    materialGroups.forEach(group => {
+      geometry.addGroup(group.start, group.count, group.materialIndex);
+    });
     
     // Asignar los UVs a la geometría
     geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
@@ -223,13 +268,6 @@ function PuzzlePiece({
   
   // Crear materiales
   const materials = useMemo(() => {
-    // Material para los lados
-    const sideMaterial = new MeshStandardMaterial({
-      color: color,
-      roughness: 0.7,
-      metalness: 0.1
-    });
-    
     // Material para la cara superior con textura
     const topMaterial = new MeshStandardMaterial({
       color: 0xffffff,
@@ -238,15 +276,16 @@ function PuzzlePiece({
       metalness: 0.1
     });
     
-    // Asignar todos los materiales
-    return Array(6).fill(sideMaterial).map((mat, index) => {
-      // Para la cara superior (que será la frontal después de rotar)
-      if (index === 0) {
-        return topMaterial;
-      }
-      return mat;
+    // Material para los lados y cara inferior (gris oscuro)
+    const sideMaterial = new MeshStandardMaterial({
+      color: 0x333333, // Gris oscuro
+      roughness: 0.7,
+      metalness: 0.1
     });
-  }, [color, clonedTexture]);
+    
+    // Devolver un array con solo los dos materiales necesarios
+    return [topMaterial, sideMaterial];
+  }, [clonedTexture]);
   
   // Animaciones con Spring para movimientos más suaves
   const [spring, api] = useSpring(() => ({

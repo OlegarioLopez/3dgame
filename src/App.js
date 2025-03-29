@@ -23,7 +23,7 @@ function App() {
   return (
     <div className="app-container">
       {/* Canvas para el contenido 3D */}
-      <Canvas camera={{ position: [0, 3, 5], fov: 50 }}>
+      <Canvas camera={{ position: [0, 8, 0], fov: 50, up: [0, 1, 0] }}>
         <ambientLight intensity={0.5} />
         <directionalLight position={[10, 10, 5]} intensity={1} />
         <Cube
@@ -32,11 +32,12 @@ function App() {
           soundEnabled={soundEnabled}
         />
         <OrbitControls 
-          enablePan={true}
+          enablePan={false}
           enableZoom={true}
-          enableRotate={true}
-          minPolarAngle={0}
-          maxPolarAngle={Math.PI / 2}
+          enableRotate={false}
+          minDistance={5}
+          maxDistance={12}
+          target={[0, 0, 0]}
         />
       </Canvas>
       
