@@ -43,7 +43,7 @@ function App() {
           enableZoom={true}
           enableRotate={false}
           minDistance={5}
-          maxDistance={12}
+          maxDistance={20}
           target={[0, 0, 0]}
         />
       </Canvas>

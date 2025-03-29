@@ -73,6 +73,22 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   const [pieces, setPieces] = useState([]);
   const [snappedPieces, setSnappedPieces] = useState({});
 
+  // Detectar si es un dispositivo móvil (movido al inicio del componente)
+  const isMobileDevice = useMemo(() => {
+    if (typeof navigator === 'undefined') return false;
+    
+    // Incluir detección más específica para iOS
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    
+    const result = isIOS || 
+            /Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+            (navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
+            
+    console.log("Device detection:", { isIOS, isMobile: result, userAgent: navigator.userAgent });
+    return result;
+  }, []);
+
   // State for managing group dragging
   const [draggedGroupInfo, setDraggedGroupInfo] = useState({
      groupId: null,
@@ -93,24 +109,52 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   const snapSound = useSound(SOUNDS.SNAP, 0.5, audioListener);
   const victorySound = useSound(SOUNDS.VICTORY, 0.5, audioListener);
   
-  // Función auxiliar para reproducir sonidos de forma segura
+  // Función auxiliar para reproducir sonidos de forma segura (mejorada para iOS)
   const playSoundSafely = useCallback((sound, delay = 0) => {
     if (!sound || !soundEnabled) return;
     
     // Helper to actually play
     const play = () => {
-        try {
-            if (!sound || !sound.buffer) {
-              console.warn('Sound buffer not ready for:', sound);
-              return;
-            }
-            if (sound.isPlaying) {
-              sound.stop();
-            }
-            sound.play();
-          } catch (error) {
-            console.warn('Error playing sound:', error);
+      try {
+        if (!sound || !sound.buffer) {
+          console.warn('Sound buffer not ready for:', sound);
+          return;
+        }
+        
+        // Para iOS, necesitamos desvincular el sonido del audio context y recrearlo cada vez
+        if (isMobileDevice) {
+          console.log('Playing sound on iOS device');
+          
+          // Crear un elemento HTML Audio (compatible con iOS)
+          const audioElement = new Audio();
+          
+          // Determinar qué archivo de sonido reproducir basado en el sonido pasado
+          let soundFile = SOUNDS.PICK; // Default
+          if (sound === snapSound) soundFile = SOUNDS.SNAP;
+          if (sound === dropSound) soundFile = SOUNDS.DROP;
+          if (sound === victorySound) soundFile = SOUNDS.VICTORY;
+          
+          audioElement.src = soundFile;
+          audioElement.volume = 0.5;
+          
+          // En iOS necesitamos una promesa para reproducir después de la interacción del usuario
+          const playPromise = audioElement.play();
+          
+          if (playPromise !== undefined) {
+            playPromise.catch(error => {
+              console.warn('Error playing audio on iOS:', error);
+            });
           }
+        } else {
+          // Método original para navegadores de escritorio
+          if (sound.isPlaying) {
+            sound.stop();
+          }
+          sound.play();
+        }
+      } catch (error) {
+        console.warn('Error playing sound:', error);
+      }
     };
 
     if (delay > 0) {
@@ -118,34 +162,68 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
     } else {
       play();
     }
-  }, [soundEnabled]);
+  }, [soundEnabled, isMobileDevice, pickSound, snapSound, dropSound, victorySound]);
 
   // Ensure listener is added to the camera
   useEffect(() => {
     if (!soundEnabled) return;
     
-    const currentCamera = camera;
-    try {
+    // Para iOS, precargamos todos los sonidos
+    if (isMobileDevice) {
+      console.log('Preloading audio for iOS device');
+      // Cargar los archivos de audio en un arreglo para inicializar el contexto de audio
+      const audioFiles = Object.values(SOUNDS);
+      audioFiles.forEach(file => {
+        const audio = new Audio();
+        audio.src = file;
+        // Establecer el atributo preload
+        audio.preload = 'auto';
+        // Cargar el audio (pero no reproducirlo)
+        audio.load();
+      });
+      
+      // Inicializar audio con un toque del usuario en iOS
+      const initAudio = () => {
+        // Crear y reproducir un sonido silencioso para inicializar el audio
+        const silentSound = new Audio();
+        silentSound.src = 'data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTGFTb25vdGhlcXVlLm9yZwBURU5DAAAAHQAAA1N3aXRjaCBQbHVzIMKpIE5DSCBTb2Z0d2FyZQBUSVQyAAAABgAAAzIyMzUAVFNTRQAAAA8AAANMYXZmNTcuODMuMTAwAAAAAAAAAAAAAAD/80DEAAAAA0gAAAAATEFNRTMuMTAwVVVVVVVVVVVVVUxBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQsRbAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/zQMSkAAADSAAAAABVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
+        silentSound.play().catch(e => console.log('Silent sound failed to play:', e));
+        
+        // Eliminar el listener después de la inicialización
+        document.removeEventListener('touchstart', initAudio);
+        document.removeEventListener('mousedown', initAudio);
+      };
+      
+      // Inicializar con el primer toque o clic
+      document.addEventListener('touchstart', initAudio, false);
+      document.addEventListener('mousedown', initAudio, false);
+    } else {
+      // Comportamiento original para desktop
+      const currentCamera = camera;
+      try {
         if (!currentCamera.children.includes(audioListener)) {
-             currentCamera.add(audioListener);
-             console.log("AudioListener added to camera.");
+          currentCamera.add(audioListener);
+          console.log("AudioListener added to camera.");
         }
-    } catch (error) {
-      console.warn('Error adding audio listener to camera:', error);
+      } catch (error) {
+        console.warn('Error adding audio listener to camera:', error);
+      }
     }
     
     // Cleanup function
     return () => {
-      try {
-          if (currentCamera && currentCamera.children.includes(audioListener)) {
-            currentCamera.remove(audioListener);
+      if (!isMobileDevice) {
+        try {
+          if (camera && camera.children.includes(audioListener)) {
+            camera.remove(audioListener);
             console.log("AudioListener removed from camera.");
           }
-      } catch (error) {
-        console.warn('Error cleaning up audio listener:', error);
+        } catch (error) {
+          console.warn('Error cleaning up audio listener:', error);
+        }
       }
     };
-  }, [audioListener, camera, soundEnabled]);
+  }, [audioListener, camera, soundEnabled, isMobileDevice]);
   // --- End Sound Management ---
 
   // Configuración del puzzle
@@ -563,174 +641,189 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   }, [pieces, puzzleBoxPos, puzzleBoxDim, pieceWidth, pieceHeight, snapSound, playSoundSafely, puzzleCompleted, victorySound, soundEnabled]);
 
   // --- Drag Handlers ---
-  const handleGroupDragStart = useCallback((index, groupId, pointerIntersection) => {
-     console.log("handleGroupDragStart called with", index, groupId); // Debug
-     const basePiece = pieces[index];
-     // Prevent starting a new drag if one is active, or if the piece/group is invalid
-     if (!basePiece || groupId === null || draggedGroupInfo.isActive) {
-       console.log("Drag start prevented:", !basePiece ? "no base piece" : groupId === null ? "no group id" : "drag already active"); // Debug
-       return;
-     }
-
-     // Calculate offset from pointer to the base piece's origin (on the drag plane)
-     // Reutilizamos TEMP_VECTOR1 en lugar de crear un nuevo Vector3
-     const pointerOffset = TEMP_VECTOR1.subVectors(pointerIntersection, basePiece.position).clone();
-     pointerOffset.y = 0; // Ignore Y offset for planar dragging
-
-     const groupMemberOffsets = {};
-     const initialTargetPositions = {};
-     
-     // Find all pieces in the same group
-     pieces.forEach((p, i) => {
-       if (p.groupId === groupId) {
-         // Calculate offset de cada pieza relativo a la pieza base
-         // Offset = posición_base - posición_pieza
-         // Esto representa cuánto hay que mover desde la pieza actual para llegar a la base
-         // Creamos una nueva instancia solo cuando necesitamos guardarla
-         const offset = new Vector3().subVectors(p.position, basePiece.position);
-         groupMemberOffsets[i] = offset;
-         initialTargetPositions[i] = p.position.clone(); // Start targets at current positions
-       }
-     });
-     
-     console.log(`Starting drag for group ${groupId} with base piece ${index}. Initial positions:`, initialTargetPositions);
-     // Set state to start the drag
-     setDraggedGroupInfo({
-        groupId: groupId,
-        basePieceIndex: index,
-        pointerOffset: pointerOffset,
-        offsets: groupMemberOffsets,
-        targetPositions: initialTargetPositions, // Set initial targets
-        isActive: true
-     });
-  }, [pieces, draggedGroupInfo.isActive]);
+  const handleGroupDragStart = useCallback((index, groupId, pointerPosition) => {
+    // Verificar que el índice sea válido
+    if (index < 0 || index >= pieces.length) {
+      console.error(`Invalid piece index: ${index}`);
+      return;
+    }
+    
+    console.log(`iOS Debug - Starting drag for piece ${index} at position:`, pointerPosition);
+    
+    const basePiece = pieces[index];
+    if (!basePiece) {
+      console.error(`Piece at index ${index} does not exist`);
+      return;
+    }
+    
+    // Calculate offset del puntero desde la base de la pieza
+    // Esto se usará para mantener la posición relativa mientras se arrastra
+    const pointerOffset = new Vector3().subVectors(pointerPosition, basePiece.position);
+    
+    // Importante: pointerOffset.y debe ser 0 para mantener el movimiento planar
+    pointerOffset.y = 0;
+    
+    console.log(`Drag offset from piece:`, { x: pointerOffset.x, z: pointerOffset.z });
+    
+    // Rastrear todos los miembros del grupo y sus offsets relativos a la pieza base
+    const groupMemberOffsets = {};
+    const initialTargetPositions = {};
+    
+    // Encontrar todas las piezas del mismo grupo
+    pieces.forEach((p, i) => {
+      if (p.groupId === groupId) {
+        // Calcular offset de cada pieza relativo a la pieza base
+        // offset = posición_base - posición_pieza  
+        const offset = new Vector3().subVectors(p.position, basePiece.position);
+        groupMemberOffsets[i] = offset;
+        initialTargetPositions[i] = p.position.clone(); // Iniciar targets en posiciones actuales
+        
+        console.log(`Group member ${i} offset:`, { x: offset.x.toFixed(2), z: offset.z.toFixed(2) });
+      }
+    });
+    
+    // Establecer estado para iniciar el arrastre
+    setDraggedGroupInfo({
+      groupId: groupId,
+      basePieceIndex: index,
+      pointerOffset: pointerOffset,
+      offsets: groupMemberOffsets,
+      targetPositions: initialTargetPositions,
+      isActive: true
+    });
+    
+    console.log(`Drag started for group ${groupId} with base piece ${index}`);
+  }, [pieces]);
 
   const handleGroupDrag = useCallback((pointerIntersection) => {
-     // Update target positions based on mouse movement during an active drag
-     if (!draggedGroupInfo.isActive || draggedGroupInfo.groupId === null || !pieces[draggedGroupInfo.basePieceIndex]) return;
+    if (!draggedGroupInfo.isActive) return;
+    
+    const { groupId, basePieceIndex, pointerOffset, offsets } = draggedGroupInfo;
+    
+    // Debugging para iOS
+    console.log("iOS Debug - Drag update, pointer at:", 
+                [pointerIntersection.x.toFixed(2), pointerIntersection.z.toFixed(2)]);
+    
+    // Calculate donde debería estar la pieza base al restar el offset del puntero
+    const targetBasePiecePosition = new Vector3()
+      .copy(pointerIntersection)
+      .sub(pointerOffset);
+    
+    // Fijar Y a 0.101 (altura del tablero + 0.001)
+    targetBasePiecePosition.y = 0.101; 
+    
+    // Actualizar las posiciones objetivo para todas las piezas del grupo
+    const newTargetPositions = { ...draggedGroupInfo.targetPositions };
+    
+    // Para cada miembro del grupo, calcular su nueva posición basada en el offset desde la base
+    Object.entries(offsets).forEach(([pieceIndex, offset]) => {
+      const targetPos = new Vector3()
+        .copy(targetBasePiecePosition)
+        .add(offset);
+      
+      // Asegurarnos de que Y siempre es 0.101 (justo encima del tablero)
+      targetPos.y = 0.101;
+      
+      // Almacenar la posición objetivo
+      newTargetPositions[pieceIndex] = targetPos;
+    });
+    
+    // Actualizar el estado con las nuevas posiciones objetivo
+    setDraggedGroupInfo(current => ({
+      ...current,
+      targetPositions: newTargetPositions
+    }));
+  }, [draggedGroupInfo]);
 
-     const { basePieceIndex, pointerOffset, offsets, groupId } = draggedGroupInfo;
-     const newTargetPositions = {};
-
-     // Calculate new base position based on pointer, elevated during drag
-     const newBasePosX = pointerIntersection.x - pointerOffset.x;
-     const newBasePosZ = pointerIntersection.z - pointerOffset.z;
-     // Keep the group elevated slightly while dragging for visual clarity
-     const dragElevation = 0.3; 
-     
-     // Reutilizamos un vector para la posición base
-     const newBasePos = new Vector3(newBasePosX, dragElevation, newBasePosZ);
-
-     // Primero establecemos la posición de la pieza base
-     newTargetPositions[basePieceIndex] = newBasePos.clone();
-
-     // Luego calculamos las posiciones de las demás piezas usando los offsets relativos
-     Object.keys(offsets).forEach(indexStr => {
-        const index = parseInt(indexStr, 10);
-        if (index === basePieceIndex) return; // Ya establecimos la pieza base arriba
-         
-        const relativeOffset = offsets[index];
-        // Añadimos el offset a la posición base - las piezas mantienen su posición relativa
-        // Reutilizamos TEMP_VECTOR2 para el cálculo y creamos una nueva instancia para guardar
-        const targetPos = TEMP_VECTOR2.copy(newBasePos).add(relativeOffset).clone();
-        targetPos.y = dragElevation; // Mantener misma elevación para todas las piezas
-        newTargetPositions[index] = targetPos;
-     });
-
-     // Update the state with new target positions - evitamos recrear todo el objeto
-     setDraggedGroupInfo(prev => ({
-        ...prev,
-        targetPositions: newTargetPositions
-     }));
-  }, [draggedGroupInfo, pieces]);
-
-   // Add a useFrame hook within Cube to call handleGroupDrag
-   useFrame(() => {
-      if (draggedGroupInfo.isActive) {
-         // Throttling desactivado temporalmente para diagnosticar problema
-         /*
-         const now = performance.now();
-         if (now - throttleRef.current.lastUpdateTime < throttleRef.current.throttleDelay) {
-           return;
-         }
-         throttleRef.current.lastUpdateTime = now;
-         */
-         
-         raycaster.setFromCamera(mouse, camera);
-         const intersection = new Vector3();
-         // Update target positions if the ray intersects the plane
-         if (raycaster.ray.intersectPlane(DRAG_PLANE, intersection)) {
-            handleGroupDrag(intersection);
-         }
+  // Add a useFrame hook within Cube to call handleGroupDrag
+  useFrame(() => {
+    if (draggedGroupInfo.isActive) {
+      // Debugging para iOS
+      console.log("Dragging active - Group:", draggedGroupInfo.groupId, "Mouse:", mouse);
+      
+      raycaster.setFromCamera(mouse, camera);
+      const intersection = new Vector3();
+      // Update target positions if the ray intersects the plane
+      const didIntersect = raycaster.ray.intersectPlane(DRAG_PLANE, intersection);
+      console.log("Frame intersection:", { didIntersect, point: didIntersect ? [intersection.x.toFixed(2), intersection.y.toFixed(2), intersection.z.toFixed(2)] : null });
+      
+      if (didIntersect) {
+        handleGroupDrag(intersection);
       }
-   });
-
+    }
+  });
+  
   const handleGroupDragEnd = useCallback((droppedPieceIndex, finalPointerIntersection, isCancel = false) => {
-     if (!draggedGroupInfo.isActive) return;
+    if (!draggedGroupInfo.isActive) return;
 
-     console.log(`Drag end triggered for group ${draggedGroupInfo.groupId}. Cancel: ${isCancel}`);
+    console.log(`iOS Debug - Drag end for group ${draggedGroupInfo.groupId} at position:`, 
+                [finalPointerIntersection.x.toFixed(2), finalPointerIntersection.z.toFixed(2)], 
+                `Cancel: ${isCancel}`);
 
-     // Calculate the final drop position on the board plane (Y=0.101)
-     // IMPORTANTE: Usar siempre la última posición de arrastre como punto de referencia
-     const lastTargetPos = draggedGroupInfo.targetPositions[droppedPieceIndex];
-     
-     // Si no tenemos lastTargetPos (poco probable), fallback a la intersección del puntero
-     const finalDropPosition = new Vector3(
-         lastTargetPos ? lastTargetPos.x : finalPointerIntersection.x,
-         0.101, // Ensure final position is on the board plane
-         lastTargetPos ? lastTargetPos.z : finalPointerIntersection.z
-     );
+    // Calcular la posición final de drop en el plano del tablero (Y=0.101)
+    // IMPORTANTE: Usar siempre la última posición de arrastre como punto de referencia
+    const lastTargetPos = draggedGroupInfo.targetPositions[droppedPieceIndex];
+    
+    // Si no tenemos lastTargetPos (poco probable), fallback a la intersección del puntero
+    const finalDropPosition = new Vector3(
+      lastTargetPos ? lastTargetPos.x : finalPointerIntersection.x,
+      0.101, // Asegurar que la posición final está en el plano del tablero
+      lastTargetPos ? lastTargetPos.z : finalPointerIntersection.z
+    );
 
-     // Store essential info before resetting state
-     const previousDragInfo = { ...draggedGroupInfo }; 
-     const droppedGroupId = previousDragInfo.groupId;
-     
-     // Guardar todas las posiciones target actuales antes de resetear
-     const finalPositions = { ...previousDragInfo.targetPositions };
+    // Almacenar info esencial antes de resetear estado
+    const previousDragInfo = { ...draggedGroupInfo }; 
+    const droppedGroupId = previousDragInfo.groupId;
+    
+    // Guardar todas las posiciones target actuales antes de resetear
+    const finalPositions = { ...previousDragInfo.targetPositions };
 
-     // Reset drag state FIRST to stop useFrame updates
-     setDraggedGroupInfo({ 
-        groupId: null, 
-        basePieceIndex: null, 
-        pointerOffset: new Vector3(), 
-        offsets: {}, 
-        targetPositions: {}, 
-        isActive: false 
-     });
+    // Reset drag state PRIMERO para detener actualizaciones de useFrame
+    setDraggedGroupInfo({ 
+      groupId: null, 
+      basePieceIndex: null, 
+      pointerOffset: new Vector3(), 
+      offsets: {}, 
+      targetPositions: {}, 
+      isActive: false 
+    });
 
-     // Then, handle placement and snapping only if it wasn't a cancel action
-     if (!isCancel && droppedGroupId !== null) {
-        // MODIFICACIÓN: Aplicar directamente las posiciones finales al estado
-        setPieces(currentPieces => {
-           const newPieces = [...currentPieces];
-           
-           // Identificar todas las piezas del grupo
-           const groupIndices = currentPieces.reduce((acc, p, idx) => {
-              if (p.groupId === droppedGroupId) acc.push(idx);
-              return acc;
-           }, []);
-           
-           // Aplicar las posiciones finales a todas las piezas del grupo
-           groupIndices.forEach(idx => {
-              if (finalPositions[idx]) {
-                 // Usar la posición final del arrastre, con altura correcta
-                 const pos = finalPositions[idx];
-                 newPieces[idx] = {
-                    ...newPieces[idx],
-                    position: new Vector3(pos.x, 0.101, pos.z)
-                 };
-              }
-           });
-           
-           return newPieces;
+    // Luego, manejar colocación y snap solo si no fue una acción de cancelación
+    if (!isCancel && droppedGroupId !== null) {
+      console.log(`Handling placement for piece ${droppedPieceIndex} at:`, 
+                  [finalDropPosition.x.toFixed(2), finalDropPosition.z.toFixed(2)]);
+                  
+      // MODIFICACIÓN: Aplicar directamente las posiciones finales al estado
+      setPieces(currentPieces => {
+        const newPieces = [...currentPieces];
+        
+        // Identificar todas las piezas del grupo
+        const groupIndices = currentPieces.reduce((acc, p, idx) => {
+          if (p.groupId === droppedGroupId) acc.push(idx);
+          return acc;
+        }, []);
+        
+        // Aplicar las posiciones finales a todas las piezas del grupo
+        groupIndices.forEach(idx => {
+          if (finalPositions[idx]) {
+            // Usar la posición final del arrastre, con altura correcta
+            const pos = finalPositions[idx];
+            newPieces[idx] = {
+              ...newPieces[idx],
+              position: new Vector3(pos.x, 0.101, pos.z)
+            };
+          }
         });
         
-        // DESPUÉS de aplicar las posiciones, ahora hacer el snapping y el resto de la lógica
-        handlePiecePlacement(droppedPieceIndex, finalDropPosition); 
-     } else {
-         // Si es cancelación, no necesitamos hacer nada, las piezas volverán a su posición original
-         console.log(`Drag cancelled for group ${droppedGroupId}. Pieces should return.`);
-     }
+        return newPieces;
+      });
+      
+      // DESPUÉS de aplicar las posiciones, ahora hacer el snapping y el resto de la lógica
+      handlePiecePlacement(droppedPieceIndex, finalDropPosition); 
+    } else {
+      // Si es cancelación, no necesitamos hacer nada, las piezas volverán a su posición original
+      console.log(`Drag cancelled for group ${droppedGroupId}. Pieces should return.`);
+    }
   }, [draggedGroupInfo, handlePiecePlacement]);
   
   // Reiniciar el juego

@@ -1,55 +1,75 @@
-import { useMemo, useEffect } from 'react';
-import { Audio, AudioLoader } from 'three';
+import { useEffect, useState, useMemo } from 'react';
+import { AudioLoader, Audio } from 'three';
 
-// Un hook personalizado para cargar y manejar sonidos
-function useSound(soundUrl, volume = 0.5, audioListener) {
-  // Crear un objeto de audio que se mantiene entre renderizados
-  const sound = useMemo(() => {
-    // Only create audio if audioListener is provided
-    if (audioListener) {
-      return new Audio(audioListener);
-    }
-    return null;
-  }, [audioListener]);
+// Hook para cargar y manejar sonidos de manera limpia
+const useSound = (url, volume = 1.0, listener) => {
+  const [sound, setSound] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState(null);
   
-  // Cargar el sonido cuando el componente se monta
+  // Crear un audio loader una vez por instancia del hook
+  const audioLoader = useMemo(() => new AudioLoader(), []);
+  
   useEffect(() => {
-    if (!soundUrl || !sound) return;
+    if (!url || !listener) {
+      console.warn('No URL or listener provided to useSound hook');
+      return;
+    }
     
-    const audioLoader = new AudioLoader();
+    let isMounted = true;
+    const sound = new Audio(listener);
     
-    // Cargar el buffer de audio
+    // Set initial volume
+    sound.setVolume(volume);
+    
+    // Para mejora de compatibilidad con iOS - agregar un modo de retorno fallback
+    sound.ios_url = url; // Guardar URL para uso con Audio() en iOS
+    
+    // Load the sound asynchronously
+    setIsLoading(true);
     audioLoader.load(
-      soundUrl,
+      url,
+      // onLoad callback
       (buffer) => {
-        // Configurar el sonido cuando se carga correctamente
-        sound.setBuffer(buffer);
-        sound.setVolume(volume);
-        sound.setLoop(false);
+        // If component is still mounted, set the buffer
+        if (isMounted) {
+          sound.setBuffer(buffer);
+          setSound(sound);
+          setIsLoading(false);
+          console.log(`Sound loaded: ${url}`);
+        }
       },
-      // Callback de progreso (opcional)
-      undefined,
-      // Callback de error
-      (error) => {
-        console.error('Error cargando sonido:', error);
+      // onProgress callback (not really used for audio)
+      (xhr) => {
+        //console.log(`${( xhr.loaded / xhr.total * 100 )}% loaded`);
+      },
+      // onError callback
+      (err) => {
+        if (isMounted) {
+          console.error(`Error loading sound: ${url}`, err);
+          setError(err);
+          setIsLoading(false);
+        }
       }
     );
     
-    // Limpieza cuando el componente se desmonta
+    // Clean up to prevent memory leaks
     return () => {
-      // Detener la reproducción si está activa
-      if (sound.isPlaying) {
-        sound.stop();
-      }
-      // Liberar el buffer si existe
-      if (sound.buffer) {
-        sound.buffer = null;
+      isMounted = false;
+      if (sound) {
+        // Stop sound if playing
+        if (sound.isPlaying) {
+          sound.stop();
+        }
+        // Dispose buffer to free memory
+        if (sound.buffer) {
+          sound.buffer = null;
+        }
       }
     };
-  }, [sound, soundUrl, volume]);
+  }, [url, volume, listener, audioLoader]);
   
-  // Devolver el objeto de audio para que pueda ser usado por el componente
   return sound;
-}
+};
 
 export default useSound; 

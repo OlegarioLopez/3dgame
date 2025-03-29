@@ -291,69 +291,232 @@ function PuzzlePiece({
     return [topMaterial, sideMaterial];
   }, [clonedTexture]);
   
-  // Animaciones con Spring para movimientos más suaves
+  // Preparar hooks y animaciones
   const [spring, api] = useSpring(() => ({
-    position: [initialPosition.x, initialPosition.y, initialPosition.z], // Start at the initial position from state
-    scale: [1, 1, 1], // Usar array en lugar de escalar
+    position: [position.x, position.y, position.z],
     rotation: [Math.PI/2, 0, 0],
-    config: { mass: 1, tension: 170, friction: 26 } // Default config
+    scale: [1, 1, 1],
+    config: { mass: 1, tension: 170, friction: 26 }
   }));
-
-  // Update spring position IMMEDIATELY if initialPosition prop changes (e.g., on reset or external update)
-  // UNLESS this piece is part of the actively dragged group.
+  
+  // Actualizar spring basado en el estado de arrastre del grupo
   useEffect(() => {
-    // Determine if this piece is currently being dragged as part of the active group
-    const isActiveGroupMember = draggedGroupInfo.isActive && allPieces[index]?.groupId === draggedGroupInfo.groupId;
-    
-    // Only update if the initialPosition actually differs from the current spring value and not actively dragged
-    const currentSpringPos = spring.position.get(); // Get current value
-    const needsUpdate = currentSpringPos[0] !== initialPosition.x || 
-                        currentSpringPos[1] !== initialPosition.y || 
-                        currentSpringPos[2] !== initialPosition.z;
-
-    if (!isActiveGroupMember && needsUpdate) {
-      // console.log(`Piece ${index} (Group ${allPieces[index]?.groupId}) updating to initialPos:`, initialPosition, `Active Drag: ${draggedGroupInfo.isActive} (Group ${draggedGroupInfo.groupId})`);
+    if (draggedGroupInfo.isActive && draggedGroupInfo.targetPositions[index]) {
+      const targetPos = draggedGroupInfo.targetPositions[index];
       api.start({ 
-        to: { position: [initialPosition.x, initialPosition.y, initialPosition.z] },
-        immediate: true // Use immediate to avoid animation conflicts
+        position: [targetPos.x, targetPos.y, targetPos.z],
+        config: { mass: 0.5, tension: 500, friction: 40 } 
+      });
+    } else {
+      api.start({ 
+        position: [position.x, position.y, position.z]
       });
     }
-  }, [initialPosition, index, api, spring.position, draggedGroupInfo.isActive, draggedGroupInfo.groupId, allPieces]); // Dependencies
-
-  // Efectos para animaciones cuando se encaja una pieza en su posición FINAL
+  }, [draggedGroupInfo, index, position, api]);
+  
+  // Actualizar materiales basados en estado isSnapped (final position)
   useEffect(() => {
     if (isSnapped) {
-      // Animación cuando encaja
-      api.start({
-        scale: [1.05, 1.05, 1.05], // Usar array en lugar de escalar
-        onRest: () => {
-          api.start({ scale: [1, 1, 1] }); // Usar array en lugar de escalar
+      // Si la pieza está encajada, actualizar materiales (opcional: efecto visual)
+      materials.forEach(mat => {
+        if (mat.emissive) {
+          mat.emissive.set(0x222222);
         }
       });
+    } else {
+      // Reestablecer materiales
+      materials.forEach(mat => {
+        if (mat.emissive) {
+          mat.emissive.set(0x000000);
+        }
+      });
+    }
+  }, [isSnapped, materials]);
+  
+  // Detectar si es un dispositivo móvil
+  const isMobileDevice = useMemo(() => {
+    if (typeof navigator === 'undefined') return false;
+    
+    // Incluir detección más específica para iOS
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    
+    return isIOS || 
+           /Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ||
+           (navigator.maxTouchPoints && navigator.maxTouchPoints > 2);
+  }, []);
+  
+  // Referencia para rastrear si ya comenzó el arrastre en móvil
+  const touchDragActive = useRef(false);
+  
+  // Calcular la intersección del rayo con el plano para eventos táctiles
+  const getTouchIntersection = useCallback((e) => {
+    // Calcular la posición normalizada del touch
+    const touch = e.touches?.[0] || e.changedTouches?.[0];
+    const container = document.querySelector('canvas');
+    if (!touch || !container) return null;
+    
+    console.log("Touch detected:", {
+      clientX: touch.clientX,
+      clientY: touch.clientY,
+      container: container.getBoundingClientRect()
+    });
+    
+    const rect = container.getBoundingClientRect();
+    
+    // Asegurarse de que las coordenadas estén dentro del canvas
+    if (touch.clientX < rect.left || touch.clientX > rect.right || 
+        touch.clientY < rect.top || touch.clientY > rect.bottom) {
+      console.log("Touch outside canvas boundaries");
+      return null;
+    }
+    
+    const x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
+    
+    console.log("Normalized touch coords:", { x, y });
+    
+    // Configurar el raycaster con la posición táctil
+    raycaster.setFromCamera({x, y}, camera);
+    
+    // Calcular la intersección con el plano
+    const intersection = new Vector3();
+    const didIntersect = raycaster.ray.intersectPlane(DRAG_PLANE, intersection);
+    
+    console.log("Ray intersection:", { didIntersect, point: didIntersect ? intersection.toArray() : null });
+    
+    if (didIntersect) {
+      return intersection;
+    }
+    return null;
+  }, [raycaster, camera]);
+  
+  // Manejadores de eventos para dispositivos móviles
+  const onTouchStart = useCallback((e) => {
+    console.log("iOS Debug - Touch Start:", { isMobile: isMobileDevice, pieceIndex: index });
+    // Importante: usar siempre el manejo táctil en iOS/móviles, sin hacer la verificación
+    // if (!isMobileDevice) return;
+    
+    e.stopPropagation();
+    e.preventDefault(); // Prevenir comportamiento predeterminado (scrolling, etc)
+    
+    const intersection = getTouchIntersection(e);
+    console.log("Touch intersection result:", intersection);
+    
+    if (!intersection) {
+      console.log("No intersection found for touch");
+      return;
+    }
+    
+    const pieceData = allPieces[index];
+    if (pieceData) {
+      touchDragActive.current = true;
+      setIsDraggingThisPiece(true);
       
-      // Use sound function and object passed from Cube
+      // Iniciar arrastre inmediatamente en móviles
+      onGroupDragStart(index, pieceData.groupId, intersection);
+      
+      // Efecto visual de selección
+      api.start({ 
+        scale: [1.05, 1.05, 1.05],
+        config: { mass: 0.5, tension: 500, friction: 40 } 
+      });
+      
+      // Reproducir sonido
       playSoundSafely(pickSound);
     }
-  }, [isSnapped, api, pickSound, playSoundSafely]);
+  }, [index, allPieces, onGroupDragStart, api, playSoundSafely, pickSound, getTouchIntersection]);
   
-  // Uso de useFrame para actualizar la posición de la pieza mientras se arrastra (GROUP drag)
-  useFrame(() => {
-    // If a group drag is active AND this piece belongs to that group
-    const pieceData = allPieces[index]; // Get current piece data safely
-    if (pieceData && draggedGroupInfo.isActive && pieceData.groupId === draggedGroupInfo.groupId) {
-      // Get the target position calculated by Cube for this specific piece
-      const targetPos = draggedGroupInfo.targetPositions[index];
-      if (targetPos) {
-         // Animate towards the target position using this piece's spring
-         api.start({ 
-           position: [targetPos.x, targetPos.y, targetPos.z],
-           config: { mass: 0.5, tension: 500, friction: 40 } // Faster config during drag
-         });
+  // Manejar movimiento táctil - necesario para actualizar la posición del puntero
+  const onTouchMove = useCallback((e) => {
+    if (!touchDragActive.current) return;
+    
+    e.stopPropagation();
+    e.preventDefault(); // Prevenir comportamiento predeterminado (scrolling, etc)
+    
+    console.log("iOS Debug - Touch Move");
+    
+    // Forzar la actualización de la posición del mouse
+    const intersection = getTouchIntersection(e);
+    if (intersection) {
+      // Simular el movimiento del mouse actualizando su posición
+      const container = document.querySelector('canvas');
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const touch = e.touches[0] || e.changedTouches[0];
+        const mouseX = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+        const mouseY = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
+        
+        // Actualizar la posición del mouse en el contexto de ThreeJS
+        if (mouse) {
+          mouse.x = mouseX;
+          mouse.y = mouseY;
+        }
       }
     }
-  });
+  }, [getTouchIntersection, mouse]);
   
-  // Manejadores de eventos simplificados
+  const onTouchEnd = useCallback((e) => {
+    if (!touchDragActive.current) return;
+    
+    e.stopPropagation();
+    e.preventDefault(); // Prevenir comportamiento predeterminado
+    
+    console.log("iOS Debug - Touch End");
+    
+    touchDragActive.current = false;
+    setIsDraggingThisPiece(false);
+    
+    // Finalizar el arrastre - usar la última posición conocida
+    let finalIntersection;
+    
+    // Intentar obtener la intersección actual si hay touches disponibles
+    if (e.changedTouches && e.changedTouches.length > 0) {
+      const touch = e.changedTouches[0];
+      const container = document.querySelector('canvas');
+      if (container) {
+        const rect = container.getBoundingClientRect();
+        const x = ((touch.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((touch.clientY - rect.top) / rect.height) * 2 + 1;
+        
+        raycaster.setFromCamera({x, y}, camera);
+        finalIntersection = new Vector3();
+        const didIntersect = raycaster.ray.intersectPlane(DRAG_PLANE, finalIntersection);
+        console.log("Touch end intersection:", { didIntersect, point: didIntersect ? finalIntersection.toArray() : null });
+      }
+    }
+    
+    // Si no obtuvimos la intersección desde el touch, intentar con el mouse actual
+    if (!finalIntersection) {
+      finalIntersection = new Vector3();
+      raycaster.setFromCamera(mouse, camera);
+      if (!raycaster.ray.intersectPlane(DRAG_PLANE, finalIntersection)) {
+        // Si falla, usar la posición actual como fallback
+        const lastPos = spring.position.get();
+        finalIntersection = new Vector3(lastPos[0], 0.101, lastPos[2]);
+        console.log("Using fallback position for touch end:", finalIntersection.toArray());
+      }
+    }
+    
+    // Finalizar el arrastre con la intersección calculada
+    onGroupDragEnd(index, finalIntersection);
+    
+    // Restaurar escala normal
+    api.start({ 
+      scale: [1, 1, 1],
+      config: { mass: 1, tension: 170, friction: 26 }
+    });
+  }, [
+    index, 
+    onGroupDragEnd, 
+    api, 
+    raycaster, 
+    camera, 
+    mouse, 
+    spring.position
+  ]);
+
+  // Manejadores de eventos simplificados para desktop
   const onPointerDown = useCallback((e) => {
     e.stopPropagation();
     console.log("onPointerDown", index); // Debug
@@ -372,7 +535,7 @@ function PuzzlePiece({
         config: { mass: 0.5, tension: 500, friction: 40 } 
       }); 
     }
-  }, [index, allPieces, onGroupDragStart, api, playSoundSafely, pickSound]); 
+  }, [index, allPieces, onGroupDragStart, api, playSoundSafely, pickSound]);
   
   const onPointerUp = useCallback((e) => {
     if (isDraggingThisPiece) { 
@@ -410,66 +573,27 @@ function PuzzlePiece({
     spring.position // Added spring position for fallback
   ]);
 
-  // Cancel group drag if pointer leaves the window/canvas
-  const onPointerLeave = useCallback(() => {
-      // SOLO queremos cancelar si realmente el puntero sale de la VENTANA, no de la pieza
-      // Este evento está causando problemas al arrastrar, así que lo desactivamos
-      // El onPointerUp normal manejará todo cuando se suelte
-      
-      /* COMENTADO PARA EVITAR CANCELACIÓN ACCIDENTAL
-      if (isDraggingThisPiece) {
-         console.log(`Pointer left canvas during drag initiated by piece ${index}`);
-         // Use the last known target position for this piece from Cube's state if available
-         const lastKnownTarget = draggedGroupInfo.isActive ? draggedGroupInfo.targetPositions[index] : null;
-         const fallbackPos = lastKnownTarget ? 
-            new Vector3(lastKnownTarget.x, 0.101, lastKnownTarget.z) : 
-            new Vector3(spring.position.get()[0], 0.101, spring.position.get()[2]); // Current visual position
-
-         onGroupDragEnd(index, fallbackPos, true); // Indicate cancellation = true
-         setIsDraggingThisPiece(false); // Stop tracking drag initiation here
-         api.start({ scale: 1 }); // Reset scale
-      }
-      */
-      
-      // No hacemos nada, permitimos que el arrastre continúe
-  }, [isDraggingThisPiece, index, onGroupDragEnd, api, draggedGroupInfo, spring.position]);
-
-  // Actualizar materiales basados en estado isSnapped (final position)
-  useEffect(() => {
-    if (isSnapped) {
-      // Si la pieza está encajada, actualizar materiales (opcional: efecto visual)
-      materials.forEach(mat => {
-        if (mat.emissive) {
-          mat.emissive.set(0x222222);
-        }
-      });
-    } else {
-      // Reestablecer materiales
-      materials.forEach(mat => {
-        if (mat.emissive) {
-          mat.emissive.set(0x000000);
-        }
-      });
-    }
-  }, [isSnapped, materials]);
-
   return (
     <animated.mesh 
       ref={meshRef} 
-      position={spring.position} // Position driven by spring reacting to initialPosition or targetPositions
+      position={spring.position}
       rotation={spring.rotation}
       scale={spring.scale}
       geometry={puzzleGeometry}
-      userData={{ type: 'puzzlePiece', index, groupId: allPieces[index]?.groupId }} // Include groupId
+      userData={{ type: 'puzzlePiece', index, groupId: allPieces[index]?.groupId }}
+      // Usar AMBOS sistemas de eventos para máxima compatibilidad
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp} // Treat cancel like up - triggers onGroupDragEnd
+      onPointerCancel={onPointerUp}
+      // Agregar eventos táctiles específicos para móviles
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
       onClick={(e) => {
         console.log("Click on piece", index);
         e.stopPropagation();
       }}
-      // DESACTIVAMOS onPointerLeave que está causando problemas con el arrastre
-      // onPointerLeave={onPointerLeave} // Handle pointer leaving canvas - triggers onGroupDragEnd(..., true)
     >
       <primitive object={materials} attach="material" />
     </animated.mesh>
