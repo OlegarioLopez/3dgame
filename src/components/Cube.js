@@ -1,644 +1,46 @@
-import React, { useRef, useMemo, useState, useCallback, useEffect } from 'react';
-import { useLoader, useThree, useFrame } from '@react-three/fiber';
+import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import { useThree, useFrame } from '@react-three/fiber';
 import { 
-  TextureLoader, 
-  RepeatWrapping, 
   Vector2, 
-  Shape, 
-  ExtrudeGeometry, 
-  DoubleSide,
-  MeshStandardMaterial,
-  BufferAttribute,
   Vector3,
-  Matrix4,
-  BoxGeometry,
-  Raycaster,
-  Plane as ThreePlane,
-  Audio,
-  AudioListener,
-  AudioLoader,
-  CanvasTexture
+  Plane,
+  AudioListener
 } from 'three';
-import { useSpring, animated } from '@react-spring/three';
+import PuzzlePiece from './PuzzlePiece';
+import PuzzleBox from './PuzzleBox';
+import useSound from './useSound';
 
-// Sonidos
+// Sonidos (como URLs relativas desde la carpeta public)
 const SOUNDS = {
-  PICK: '/sounds/cartoon-jump-6462.mp3',     // Sonido al levantar una pieza
-  DROP: '',   // Sin sonido al soltar una pieza
-  SNAP: '/sounds/coin-recieved-230517.mp3',   // Sonido al encajar una pieza
-  VICTORY: '/sounds/winning-218995.mp3'        // Sonido al completar el puzzle
+  PICK: '/sounds/cartoon-jump-6462.mp3',
+  DROP: '/sounds/falled-sound-effect-278635.mp3',
+  SNAP: '/sounds/coin-recieved-230517.mp3',
+  VICTORY: '/sounds/energy-drink-effect-230559.mp3'
 };
 
-// Verificar si un formato de audio es compatible con el navegador
-function isAudioFormatSupported(format) {
-  const audio = document.createElement('audio');
-  return audio.canPlayType && audio.canPlayType(format).replace(/no/, '');
-}
+// Mapa de vecinos: define qué piezas son vecinas legítimas
+const pieceNeighborsMap = {
+  0: { right: 1, bottom: 3 }, // pieza 0 tiene pieza 1 a su derecha y pieza 3 debajo
+  1: { left: 0, right: 2, bottom: 4 }, // pieza 1 tiene pieza 0 a su izquierda, pieza 2 a su derecha y pieza 4 debajo
+  2: { left: 1, bottom: 5 }, // pieza 2 tiene pieza 1 a su izquierda y pieza 5 debajo
+  3: { top: 0, right: 4 }, // pieza 3 tiene pieza 0 arriba y pieza 4 a su derecha
+  4: { left: 3, right: 5, top: 1 }, // pieza 4 tiene pieza 3 a su izquierda, pieza 5 a su derecha y pieza 1 arriba
+  5: { left: 4, top: 2 } // pieza 5 tiene pieza 4 a su izquierda y pieza 2 arriba
+};
 
-// Comprobamos compatibilidad con MP3
-const isMp3Supported = isAudioFormatSupported('audio/mpeg');
-console.log('MP3 support:', isMp3Supported ? 'Supported' : 'Not supported');
+// Función para verificar si dos piezas son vecinas legítimas
+const checkPiecesConnection = (piece1Index, piece2Index) => {
+  const piece1Neighbors = pieceNeighborsMap[piece1Index];
+  if (!piece1Neighbors) return false;
+  
+  // Comprueba si piece2Index aparece como vecino de piece1Index
+  return Object.values(piece1Neighbors).includes(piece2Index);
+};
 
-// Componente para una pieza individual del puzzle
-function PuzzlePiece({ 
-  position, 
-  textureOffset, 
-  textureSize, 
-  size, 
-  color, 
-  connections, 
-  index, 
-  onPieceMoved,
-  isSnapped, 
-  isPlacedInBox,
-  correctPosition, 
-  soundEnabled = true,
-  allPieces, 
-  pieceWidth, 
-  pieceHeight, 
-  checkPiecesConnection,
-  puzzleBoxPosition,
-  puzzleBoxSize,
-  onGroupDragStart,
-  onGroupDragEnd,
-  draggedGroupInfo, 
-  initialPosition,
-  // Sound props from Cube
-  pickSound,
-  playSoundSafely 
-}) {
-  const meshRef = useRef();
-  const { camera, raycaster, mouse } = useThree();
-  const [isDraggingThisPiece, setIsDraggingThisPiece] = useState(false); 
-  
-  // Carga la textura desde public/4.jpg
-  const texture = useLoader(TextureLoader, '/4.jpg');
-  
-  // Configuramos la textura para mostrar solo una porción
-  const clonedTexture = texture.clone();
-  // Importante: NO repetir la textura
-  clonedTexture.wrapS = RepeatWrapping;
-  clonedTexture.wrapT = RepeatWrapping;
-  // Configuramos explícitamente offset y repeat para que cada pieza muestre solo su porción
-  clonedTexture.offset.set(textureOffset.x, textureOffset.y);
-  clonedTexture.repeat.set(textureSize.x, textureSize.y);
-  clonedTexture.needsUpdate = true;
-  
-  // Crear la forma de la pieza de puzzle
-  const puzzleShape = useMemo(() => {
-    // Tamaño del nodo (protuberancia/hendidura)
-    const nodeSize = Math.min(size.x, size.y) * 0.2;
-    
-    // Crear la forma base rectangular
-    const shape = new Shape();
-    shape.moveTo(-size.x/2, -size.y/2);
-    
-    // Lado inferior: con nodo si es necesario
-    if (connections.bottom === 1) {
-      // Con protuberancia
-      shape.lineTo(-nodeSize, -size.y/2);
-      shape.bezierCurveTo(
-        -nodeSize*0.5, -size.y/2 - nodeSize*1.5,
-        nodeSize*0.5, -size.y/2 - nodeSize*1.5,
-        nodeSize, -size.y/2
-      );
-      shape.lineTo(size.x/2, -size.y/2);
-    } else if (connections.bottom === -1) {
-      // Con hendidura
-      shape.lineTo(-nodeSize, -size.y/2);
-      shape.bezierCurveTo(
-        -nodeSize*0.5, -size.y/2 + nodeSize*1.5,
-        nodeSize*0.5, -size.y/2 + nodeSize*1.5,
-        nodeSize, -size.y/2
-      );
-      shape.lineTo(size.x/2, -size.y/2);
-    } else {
-      // Recto
-      shape.lineTo(size.x/2, -size.y/2);
-    }
-    
-    // Lado derecho: con nodo si es necesario
-    if (connections.right === 1) {
-      // Con protuberancia
-      shape.lineTo(size.x/2, -nodeSize);
-      shape.bezierCurveTo(
-        size.x/2 + nodeSize*1.5, -nodeSize*0.5,
-        size.x/2 + nodeSize*1.5, nodeSize*0.5,
-        size.x/2, nodeSize
-      );
-      shape.lineTo(size.x/2, size.y/2);
-    } else if (connections.right === -1) {
-      // Con hendidura
-      shape.lineTo(size.x/2, -nodeSize);
-      shape.bezierCurveTo(
-        size.x/2 - nodeSize*1.5, -nodeSize*0.5,
-        size.x/2 - nodeSize*1.5, nodeSize*0.5,
-        size.x/2, nodeSize
-      );
-      shape.lineTo(size.x/2, size.y/2);
-    } else {
-      // Recto
-      shape.lineTo(size.x/2, size.y/2);
-    }
-    
-    // Lado superior: con nodo si es necesario
-    if (connections.top === 1) {
-      // Con protuberancia
-      shape.lineTo(nodeSize, size.y/2);
-      shape.bezierCurveTo(
-        nodeSize*0.5, size.y/2 + nodeSize*1.5,
-        -nodeSize*0.5, size.y/2 + nodeSize*1.5,
-        -nodeSize, size.y/2
-      );
-      shape.lineTo(-size.x/2, size.y/2);
-    } else if (connections.top === -1) {
-      // Con hendidura
-      shape.lineTo(nodeSize, size.y/2);
-      shape.bezierCurveTo(
-        nodeSize*0.5, size.y/2 - nodeSize*1.5,
-        -nodeSize*0.5, size.y/2 - nodeSize*1.5,
-        -nodeSize, size.y/2
-      );
-      shape.lineTo(-size.x/2, size.y/2);
-    } else {
-      // Recto
-      shape.lineTo(-size.x/2, size.y/2);
-    }
-    
-    // Lado izquierdo: con nodo si es necesario
-    if (connections.left === 1) {
-      // Con protuberancia
-      shape.lineTo(-size.x/2, nodeSize);
-      shape.bezierCurveTo(
-        -size.x/2 - nodeSize*1.5, nodeSize*0.5,
-        -size.x/2 - nodeSize*1.5, -nodeSize*0.5,
-        -size.x/2, -nodeSize
-      );
-      shape.lineTo(-size.x/2, -size.y/2);
-    } else if (connections.left === -1) {
-      // Con hendidura
-      shape.lineTo(-size.x/2, nodeSize);
-      shape.bezierCurveTo(
-        -size.x/2 + nodeSize*1.5, nodeSize*0.5,
-        -size.x/2 + nodeSize*1.5, -nodeSize*0.5,
-        -size.x/2, -nodeSize
-      );
-      shape.lineTo(-size.x/2, -size.y/2);
-    } else {
-      // Recto
-      shape.lineTo(-size.x/2, -size.y/2);
-    }
-    
-    return shape;
-  }, [size, connections]);
-  
-  // Crear la geometría de la pieza de puzzle
-  const puzzleGeometry = useMemo(() => {
-    // Configuración de la extrusión
-    const extrudeSettings = {
-      steps: 1,
-      depth: 0.2,
-      bevelEnabled: true,
-      bevelThickness: 0.02,
-      bevelSize: 0.02,
-      bevelOffset: 0,
-      bevelSegments: 1
-    };
-    
-    // Crear la geometría extruida
-    const geometry = new ExtrudeGeometry(puzzleShape, extrudeSettings);
-    
-    // En lugar de calcular UVs personalizados, usamos UVs simples de 0 a 1
-    // que se mapearán según los parámetros offset y repeat de la textura
-    const positionAttribute = geometry.attributes.position;
-    const count = positionAttribute.count;
-    const uvs = new Float32Array(count * 2);
-    
-    // Crear un sistema UV simple para la cara frontal
-    const tempVector = new Vector3();
-    const transformMatrix = new Matrix4().makeRotationX(-Math.PI/2);
-    
-    for (let i = 0; i < count; i++) {
-      tempVector.set(
-        positionAttribute.getX(i),
-        positionAttribute.getY(i),
-        positionAttribute.getZ(i)
-      );
-      
-      // Aplicar transformación para simular la rotación final
-      tempVector.applyMatrix4(transformMatrix);
-      
-      // Si es la cara superior (que después de rotar será la frontal)
-      const isTopFace = Math.abs(tempVector.y - 0.2) < 0.05;
-      
-      if (isTopFace) {
-        // Normalizar las coordenadas al rango 0-1 para esta cara
-        const normalizedX = (tempVector.x + size.x/2) / size.x;
-        const normalizedZ = (tempVector.z + size.y/2) / size.y;
-        
-        // Asignar UVs directas sin multiplicar por textureSize o sumar textureOffset
-        // esos ajustes se harán en la textura directamente
-        uvs[i * 2] = normalizedX;
-        uvs[i * 2 + 1] = normalizedZ;
-      } else {
-        // Para las demás caras, usar UVs en el rango 0-1
-        const normalizedX = (tempVector.x + size.x/2) / size.x;
-        const normalizedZ = (tempVector.z + size.y/2) / size.y;
-        
-        uvs[i * 2] = normalizedX;
-        uvs[i * 2 + 1] = normalizedZ;
-      }
-    }
-    
-    // Asignar los UVs a la geometría
-    geometry.setAttribute('uv', new BufferAttribute(uvs, 2));
-    geometry.attributes.uv.needsUpdate = true;
-    
-    return geometry;
-  }, [puzzleShape, size]);
-  
-  // Crear materiales
-  const materials = useMemo(() => {
-    // Material para los lados
-    const sideMaterial = new MeshStandardMaterial({
-      color: color,
-      roughness: 0.7,
-      metalness: 0.1
-    });
-    
-    // Material para la cara superior con textura
-    const topMaterial = new MeshStandardMaterial({
-      color: 0xffffff,
-      map: clonedTexture,
-      roughness: 0.5,
-      metalness: 0.1
-    });
-    
-    // Asignar todos los materiales
-    return Array(6).fill(sideMaterial).map((mat, index) => {
-      // Para la cara superior (que será la frontal después de rotar)
-      if (index === 0) {
-        return topMaterial;
-      }
-      return mat;
-    });
-  }, [color, clonedTexture]);
-  
-  // Animaciones con Spring para movimientos más suaves
-  const [spring, api] = useSpring(() => ({
-    position: [initialPosition.x, initialPosition.y, initialPosition.z], // Start at the initial position from state
-    scale: [1, 1, 1], // Usar array en lugar de escalar
-    rotation: [Math.PI/2, 0, 0],
-    config: { mass: 1, tension: 170, friction: 26 } // Default config
-  }));
-
-  // Update spring position IMMEDIATELY if initialPosition prop changes (e.g., on reset or external update)
-  // UNLESS this piece is part of the actively dragged group.
-  useEffect(() => {
-    // Determine if this piece is currently being dragged as part of the active group
-    const isActiveGroupMember = draggedGroupInfo.isActive && allPieces[index]?.groupId === draggedGroupInfo.groupId;
-    
-    // Only update if the initialPosition actually differs from the current spring value and not actively dragged
-    const currentSpringPos = spring.position.get(); // Get current value
-    const needsUpdate = currentSpringPos[0] !== initialPosition.x || 
-                        currentSpringPos[1] !== initialPosition.y || 
-                        currentSpringPos[2] !== initialPosition.z;
-
-    if (!isActiveGroupMember && needsUpdate) {
-      // console.log(`Piece ${index} (Group ${allPieces[index]?.groupId}) updating to initialPos:`, initialPosition, `Active Drag: ${draggedGroupInfo.isActive} (Group ${draggedGroupInfo.groupId})`);
-      api.start({ 
-        to: { position: [initialPosition.x, initialPosition.y, initialPosition.z] },
-        immediate: true // Use immediate to avoid animation conflicts
-      });
-    }
-  }, [initialPosition, index, api, spring.position, draggedGroupInfo.isActive, draggedGroupInfo.groupId, allPieces]); // Dependencies
-
-  // Efectos para animaciones cuando se encaja una pieza en su posición FINAL
-  useEffect(() => {
-    if (isSnapped) {
-      // Animación cuando encaja
-      api.start({
-        scale: [1.05, 1.05, 1.05], // Usar array en lugar de escalar
-        onRest: () => {
-          api.start({ scale: [1, 1, 1] }); // Usar array en lugar de escalar
-        }
-      });
-      
-      // Use sound function and object passed from Cube
-      playSoundSafely(pickSound);
-    }
-  }, [isSnapped, api, pickSound, playSoundSafely]);
-  
-  // Uso de useFrame para actualizar la posición de la pieza mientras se arrastra (GROUP drag)
-  useFrame(() => {
-    // If a group drag is active AND this piece belongs to that group
-    const pieceData = allPieces[index]; // Get current piece data safely
-    if (pieceData && draggedGroupInfo.isActive && pieceData.groupId === draggedGroupInfo.groupId) {
-      // Get the target position calculated by Cube for this specific piece
-      const targetPos = draggedGroupInfo.targetPositions[index];
-      if (targetPos) {
-         // Animate towards the target position using this piece's spring
-         api.start({ 
-           position: [targetPos.x, targetPos.y, targetPos.z],
-           config: { mass: 0.5, tension: 500, friction: 40 } // Faster config during drag
-         });
-      }
-    }
-  });
-  
-  // Manejadores de eventos simplificados
-  const onPointerDown = useCallback((e) => {
-    e.stopPropagation();
-    const pieceData = allPieces[index];
-    if (pieceData) {
-      setIsDraggingThisPiece(true);
-      onGroupDragStart(index, pieceData.groupId, e.point); 
-
-      // Use sound function and object passed from Cube
-      playSoundSafely(pickSound); 
-      
-      // Corregir el problema de animación: asegurarse de que scale es siempre un array
-      api.start({ 
-        scale: [1.05, 1.05, 1.05], // Usar array en lugar de número escalar
-        config: { mass: 0.5, tension: 500, friction: 40 } 
-      }); 
-    }
-  }, [index, allPieces, onGroupDragStart, api, playSoundSafely, pickSound]); 
-  
-  const onPointerUp = useCallback((e) => {
-    if (isDraggingThisPiece) { 
-      e.stopPropagation();
-      setIsDraggingThisPiece(false); // Mark this piece as no longer initiating drag
-
-      // Notify Cube that the drag attempt ended for this group
-      // Cube needs the final pointer position on the Y=0 plane for accurate placement checks
-      raycaster.setFromCamera(mouse, camera);
-      const plane = new ThreePlane(new Vector3(0, 1, 0), 0);
-      const finalIntersection = new Vector3();
-      if (raycaster.ray.intersectPlane(plane, finalIntersection)) {
-        // Pass the index of the piece dropped and the intersection point
-        onGroupDragEnd(index, finalIntersection); 
-      } else {
-        // Fallback if intersection fails (e.g., pointer moved off screen between events)
-        // Use the last known good position from the spring as a fallback
-        const lastPos = spring.position.get();
-        onGroupDragEnd(index, new Vector3(lastPos[0], 0.101, lastPos[2])); 
-      }
-
-      // Reset visual feedback (scale) for this piece
-      api.start({ 
-        scale: [1, 1, 1], // Usar array en lugar de escalar
-        config: { mass: 1, tension: 170, friction: 26 } // Reset to default config
-       }); 
-      
-      // Snapping logic is now handled centrally in Cube's handlePiecePlacement,
-      // triggered by the onGroupDragEnd call above.
-    }
-  }, [
-    isDraggingThisPiece, // Essential dependency
-    index, 
-    onGroupDragEnd, 
-    api, 
-    raycaster, 
-    camera, 
-    mouse, 
-    spring.position // Added spring position for fallback
-  ]);
-
-  // Cancel group drag if pointer leaves the window/canvas
-  const onPointerLeave = useCallback(() => {
-      // SOLO queremos cancelar si realmente el puntero sale de la VENTANA, no de la pieza
-      // Este evento está causando problemas al arrastrar, así que lo desactivamos
-      // El onPointerUp normal manejará todo cuando se suelte
-      
-      /* COMENTADO PARA EVITAR CANCELACIÓN ACCIDENTAL
-      if (isDraggingThisPiece) {
-         console.log(`Pointer left canvas during drag initiated by piece ${index}`);
-         // Use the last known target position for this piece from Cube's state if available
-         const lastKnownTarget = draggedGroupInfo.isActive ? draggedGroupInfo.targetPositions[index] : null;
-         const fallbackPos = lastKnownTarget ? 
-            new Vector3(lastKnownTarget.x, 0.101, lastKnownTarget.z) : 
-            new Vector3(spring.position.get()[0], 0.101, spring.position.get()[2]); // Current visual position
-
-         onGroupDragEnd(index, fallbackPos, true); // Indicate cancellation = true
-         setIsDraggingThisPiece(false); // Stop tracking drag initiation here
-         api.start({ scale: 1 }); // Reset scale
-      }
-      */
-      
-      // No hacemos nada, permitimos que el arrastre continúe
-  }, [isDraggingThisPiece, index, onGroupDragEnd, api, draggedGroupInfo, spring.position]);
-
-  // Actualizar materiales basados en estado isSnapped (final position)
-  useEffect(() => {
-    if (isSnapped) {
-      // Si la pieza está encajada, actualizar materiales (opcional: efecto visual)
-      materials.forEach(mat => {
-        if (mat.emissive) {
-          mat.emissive.set(0x222222);
-        }
-      });
-    } else {
-      // Reestablecer materiales
-      materials.forEach(mat => {
-        if (mat.emissive) {
-          mat.emissive.set(0x000000);
-        }
-      });
-    }
-  }, [isSnapped, materials]);
-
-  return (
-    <animated.mesh 
-      ref={meshRef} 
-      position={spring.position} // Position driven by spring reacting to initialPosition or targetPositions
-      rotation={spring.rotation}
-      scale={spring.scale}
-      geometry={puzzleGeometry}
-      userData={{ type: 'puzzlePiece', index, groupId: allPieces[index]?.groupId }} // Include groupId
-      onPointerDown={onPointerDown}
-      onPointerUp={onPointerUp}
-      onPointerCancel={onPointerUp} // Treat cancel like up - triggers onGroupDragEnd
-      
-      // DESACTIVAMOS onPointerLeave que está causando problemas con el arrastre
-      // onPointerLeave={onPointerLeave} // Handle pointer leaving canvas - triggers onGroupDragEnd(..., true)
-    >
-      <primitive object={materials} attach="material" />
-    </animated.mesh>
-  );
-}
-
-// Componente para la caja contenedora del puzzle
-function PuzzleBox({ width, height, depth, wallHeight, wallThickness, position }) {
-  const boxRef = useRef();
-  
-  // Material para la caja
-  const boxMaterial = useMemo(() => {
-    return new MeshStandardMaterial({
-      color: 0x666666,
-      roughness: 0.8,
-      metalness: 0.2
-    });
-  }, []);
-  
-  return (
-    <group ref={boxRef} position={position}>
-      {/* Base de la caja */}
-      <mesh position={[0, 0, 0]} receiveShadow>
-        <boxGeometry args={[width, 0.1, height]} />
-        <meshStandardMaterial color={0x444444} roughness={0.9} />
-      </mesh>
-      
-      {/* Pared izquierda */}
-      <mesh position={[-width/2 - wallThickness/2, wallHeight/2, 0]} receiveShadow>
-        <boxGeometry args={[wallThickness, wallHeight, height + wallThickness*2]} />
-        <primitive object={boxMaterial} />
-      </mesh>
-      
-      {/* Pared derecha */}
-      <mesh position={[width/2 + wallThickness/2, wallHeight/2, 0]} receiveShadow>
-        <boxGeometry args={[wallThickness, wallHeight, height + wallThickness*2]} />
-        <primitive object={boxMaterial} />
-      </mesh>
-      
-      {/* Pared superior */}
-      <mesh position={[0, wallHeight/2, -height/2 - wallThickness/2]} receiveShadow>
-        <boxGeometry args={[width + wallThickness*2, wallHeight, wallThickness]} />
-        <primitive object={boxMaterial} />
-      </mesh>
-      
-      {/* Pared inferior */}
-      <mesh position={[0, wallHeight/2, height/2 + wallThickness/2]} receiveShadow>
-        <boxGeometry args={[width + wallThickness*2, wallHeight, wallThickness]} />
-        <primitive object={boxMaterial} />
-      </mesh>
-    </group>
-  );
-}
-
-// Función para crear una textura de texto
-function createTextTexture(text, textColor = '#ffffff', bgColor = null, fontSize = 24) {
-  const canvas = document.createElement('canvas');
-  const context = canvas.getContext('2d');
-  
-  // Establecer dimensiones para que el texto sea nítido
-  canvas.width = 256;
-  canvas.height = 128;
-  
-  // Aplicar fondo si se especifica
-  if (bgColor) {
-    context.fillStyle = bgColor;
-    context.fillRect(0, 0, canvas.width, canvas.height);
-  } else {
-    context.clearRect(0, 0, canvas.width, canvas.height);
-  }
-  
-  // Configurar el estilo del texto
-  context.font = `bold ${fontSize}px Arial, sans-serif`;
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
-  context.fillStyle = textColor;
-  
-  // Dibujar el texto centrado
-  context.fillText(text, canvas.width / 2, canvas.height / 2);
-  
-  // Crear textura a partir del canvas
-  const texture = new CanvasTexture(canvas);
-  texture.needsUpdate = true;
-  
-  return texture;
-}
-
-// Componente para mostrar texto como mesh con textura
-function TextPlane({ text, position, scale = [1, 0.4, 1], fontSize = 24, textColor = '#ffffff', bgColor = null }) {
-  // Crear textura del texto
-  const texture = useMemo(() => createTextTexture(text, textColor, bgColor, fontSize), [text, textColor, bgColor, fontSize]);
-  
-  return (
-    <mesh position={position} scale={scale}>
-      <planeGeometry args={[1, 1]} />
-      <meshBasicMaterial map={texture} transparent />
-    </mesh>
-  );
-}
-
-// Componente para el mensaje de victoria
-function VictoryMessage({ visible, onRestart }) {
-  // Animaciones con spring
-  const [spring, api] = useSpring(() => ({
-    scale: 0,
-    opacity: 0,
-    rotation: [0, 0, 0],
-    config: { mass: 1, tension: 280, friction: 60 }
-  }));
-  
-  // Actualizar animación cuando cambia la visibilidad
-  useEffect(() => {
-    if (visible) {
-      api.start({
-        scale: 1.2, // Más grande para mayor impacto
-        opacity: 0.9, // Más opaco
-        rotation: [0, Math.PI * 0.05, 0], // Ligera rotación para efecto 3D
-        delay: 300,
-        config: { 
-          mass: 2,
-          tension: 280,
-          friction: 60
-        }
-      });
-    } else {
-      api.start({
-        scale: 0,
-        opacity: 0,
-        rotation: [0, 0, 0]
-      });
-    }
-  }, [visible, api]);
-  
-  if (!visible) return null;
-  
-  return (
-    <group position={[0, 1.5, -1]}>
-      <animated.mesh 
-        position={[0, 0, 0]} 
-        rotation={spring.rotation}
-        scale={spring.scale}
-        onClick={onRestart}
-      >
-        <planeGeometry args={[7, 3]} />
-        <animated.meshBasicMaterial 
-          color={0x00aa00} 
-          transparent 
-          opacity={spring.opacity} 
-        />
-      </animated.mesh>
-      
-      <animated.group scale={spring.scale} rotation={spring.rotation} position={[0, 0, 0.01]}>
-        <TextPlane
-          text="¡PUZZLE COMPLETADO!"
-          position={[0, 0.5, 0]}
-          scale={[6, 1, 1]}
-          fontSize={46}
-          textColor="#ffff00"
-        />
-        <TextPlane
-          text="Haz clic para reiniciar"
-          position={[0, -0.4, 0]}
-          scale={[5, 0.7, 1]}
-          fontSize={32}
-          textColor="#ffffff"
-        />
-      </animated.group>
-    </group>
-  );
-}
-
-function Cube() {
+function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   // Estado para rastrear las piezas
-  const [pieces, setPieces] = useState([]); // Array of piece objects { position, ..., isSnapped, isPlacedInBox, groupId }
-  const [snappedPieces, setSnappedPieces] = useState({}); // Tracks pieces in FINAL correct position by index
-  const [puzzleCompleted, setPuzzleCompleted] = useState(false);
-  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [pieces, setPieces] = useState([]);
+  const [snappedPieces, setSnappedPieces] = useState({});
 
   // State for managing group dragging
   const [draggedGroupInfo, setDraggedGroupInfo] = useState({
@@ -653,12 +55,12 @@ function Cube() {
   // Get necessary three.js elements from the hook at the top level
   const { camera, raycaster, mouse } = useThree();
 
-  // --- Sound Management (Moved from PuzzlePiece) ---
+  // --- Sound Management ---
   const audioListener = useMemo(() => new AudioListener(), []);
-  const pickSound = useMemo(() => new Audio(audioListener), [audioListener]);
-  const dropSound = useMemo(() => new Audio(audioListener), [audioListener]);
-  const snapSound = useMemo(() => new Audio(audioListener), [audioListener]);
-  const victorySound = useMemo(() => new Audio(audioListener), [audioListener]); // Assuming victory sound was already here
+  const pickSound = useSound(SOUNDS.PICK, 0.5, audioListener);
+  const dropSound = useSound(SOUNDS.DROP, 0.5, audioListener);
+  const snapSound = useSound(SOUNDS.SNAP, 0.5, audioListener);
+  const victorySound = useSound(SOUNDS.VICTORY, 0.5, audioListener);
   
   // Función auxiliar para reproducir sonidos de forma segura
   const playSoundSafely = useCallback((sound, delay = 0) => {
@@ -667,7 +69,7 @@ function Cube() {
     // Helper to actually play
     const play = () => {
         try {
-            if (!sound.buffer) {
+            if (!sound || !sound.buffer) {
               console.warn('Sound buffer not ready for:', sound);
               return;
             }
@@ -685,52 +87,13 @@ function Cube() {
     } else {
       play();
     }
-  }, [soundEnabled]); // Dependency: only soundEnabled
+  }, [soundEnabled]);
 
-  // Cargar los sonidos con manejo de errores
+  // Ensure listener is added to the camera
   useEffect(() => {
     if (!soundEnabled) return;
     
-    const audioLoader = new AudioLoader();
-    
-    // Función de ayuda para cargar sonidos con manejo de errores
-    const loadSoundSafely = (url, audioObject, volume, name) => {
-      // Skip loading if browser doesn't support mp3 (or format detection fails)
-      if (!isMp3Supported) {
-        console.warn(`MP3 format not supported or check failed. Skipping sound: ${name} (${url})`);
-        return; 
-      }
-      try {
-        console.log(`Attempting to load sound: ${name} from ${url}`);
-        audioLoader.load(
-          url, 
-          (buffer) => {
-            try {
-              audioObject.setBuffer(buffer);
-              audioObject.setVolume(volume);
-              console.log(`Sound loaded successfully: ${name}`);
-            } catch (error) {
-              console.warn(`Error setting buffer for ${name}:`, error);
-            }
-          },
-          undefined, // onProgress callback (optional)
-          (error) => {
-            console.warn(`Error loading sound ${name} from ${url}:`, error);
-          }
-        );
-      } catch (error) {
-        console.warn(`Error setting up loader for sound ${name}:`, error);
-      }
-    };
-    
-    // Load all sounds needed in Cube
-    loadSoundSafely(SOUNDS.PICK, pickSound, 0.5, 'Pick');
-    loadSoundSafely(SOUNDS.DROP, dropSound, 0.5, 'Drop'); // Assuming SOUNDS.DROP is defined, even if empty path
-    loadSoundSafely(SOUNDS.SNAP, snapSound, 0.7, 'Snap');
-    loadSoundSafely(SOUNDS.VICTORY, victorySound, 0.7, 'Victory');
-    
-    // Ensure listener is added to the camera
-    const currentCamera = camera; // Capture camera instance
+    const currentCamera = camera;
     try {
         if (!currentCamera.children.includes(audioListener)) {
              currentCamera.add(audioListener);
@@ -743,13 +106,6 @@ function Cube() {
     // Cleanup function
     return () => {
       try {
-          // Stop sounds before removing listener
-          [pickSound, dropSound, snapSound, victorySound].forEach(sound => {
-              if (sound && sound.isPlaying) {
-                  sound.stop();
-              }
-          });
-          // Remove listener only if it was added
           if (currentCamera && currentCamera.children.includes(audioListener)) {
             currentCamera.remove(audioListener);
             console.log("AudioListener removed from camera.");
@@ -758,8 +114,7 @@ function Cube() {
         console.warn('Error cleaning up audio listener:', error);
       }
     };
-    // Ensure dependencies cover all sounds and necessary objects
-  }, [audioListener, camera, pickSound, dropSound, snapSound, victorySound, soundEnabled]);
+  }, [audioListener, camera, soundEnabled]);
   // --- End Sound Management ---
 
   // Configuración del puzzle
@@ -812,77 +167,6 @@ function Cube() {
     { left: 1, right: -1, top: 1, bottom: 0 },   // Pieza 4
     { left: 1, right: 0, top: -1, bottom: 0 }    // Pieza 5
   ];
-  
-  // Definir la matriz de vecinos legítimos (qué piezas van juntas en el puzzle completo)
-  // Esta matriz define qué piezas deben estar adyacentes en el puzzle completo
-  const pieceNeighborsMap = [
-    // Para cada pieza, definimos sus vecinos legítimos por índice
-    { right: 1, bottom: 3 },      // Pieza 0: a su derecha va la pieza 1, abajo la pieza 3
-    { left: 0, right: 2, bottom: 4 }, // Pieza 1: a su izquierda va la 0, a su derecha la 2, abajo la 4
-    { left: 1, bottom: 5 },       // Pieza 2: a su izquierda va la 1, abajo la 5
-    { top: 0, right: 4 },         // Pieza 3: arriba va la 0, a su derecha la 4
-    { top: 1, left: 3, right: 5 }, // Pieza 4: arriba va la 1, a su izquierda la 3, a su derecha la 5
-    { top: 2, left: 4 }           // Pieza 5: arriba va la 2, a su izquierda la 4
-  ];
-
-  // Función para comprobar si las piezas encajan entre sí
-  const checkPiecesConnection = useCallback((pieceAIndex, pieceBIndex) => {
-    // Si algún índice no es válido, no encajan
-    if (pieceAIndex === undefined || pieceBIndex === undefined || 
-        pieceAIndex < 0 || pieceBIndex < 0 || 
-        pieceAIndex >= pieceNeighborsMap.length || pieceBIndex >= pieceNeighborsMap.length) {
-      return null;
-    }
-    
-    // Obtener los vecinos permitidos para la pieza A
-    const neighborsOfA = pieceNeighborsMap[pieceAIndex];
-    // Obtener los vecinos permitidos para la pieza B
-    const neighborsOfB = pieceNeighborsMap[pieceBIndex];
-    
-    console.log(`Checking connection between pieces ${pieceAIndex} and ${pieceBIndex}`);
-    console.log(`Neighbors of A (${pieceAIndex}):`, neighborsOfA);
-    console.log(`Neighbors of B (${pieceBIndex}):`, neighborsOfB);
-    
-    // Comprobar si B es un vecino legítimo de A
-    if (neighborsOfA.right === pieceBIndex) {
-      console.log(`Piece ${pieceBIndex} is to the RIGHT of ${pieceAIndex}`);
-      return 'horizontal'; // B debe estar a la derecha de A
-    }
-    if (neighborsOfA.left === pieceBIndex) {
-      console.log(`Piece ${pieceBIndex} is to the LEFT of ${pieceAIndex}`);
-      return 'horizontal'; // B debe estar a la izquierda de A
-    }
-    if (neighborsOfA.bottom === pieceBIndex) {
-      console.log(`Piece ${pieceBIndex} is BELOW ${pieceAIndex}`);
-      return 'vertical'; // B debe estar abajo de A
-    }
-    if (neighborsOfA.top === pieceBIndex) {
-      console.log(`Piece ${pieceBIndex} is ABOVE ${pieceAIndex}`);
-      return 'vertical'; // B debe estar arriba de A
-    }
-    
-    // También comprobamos el caso inverso: si A es vecino de B
-    if (neighborsOfB.right === pieceAIndex) {
-      console.log(`Piece ${pieceAIndex} is to the RIGHT of ${pieceBIndex}`);
-      return 'horizontal'; // A debe estar a la derecha de B
-    }
-    if (neighborsOfB.left === pieceAIndex) {
-      console.log(`Piece ${pieceAIndex} is to the LEFT of ${pieceBIndex}`);
-      return 'horizontal'; // A debe estar a la izquierda de B
-    }
-    if (neighborsOfB.bottom === pieceAIndex) {
-      console.log(`Piece ${pieceAIndex} is BELOW ${pieceBIndex}`);
-      return 'vertical'; // A debe estar abajo de B
-    }
-    if (neighborsOfB.top === pieceAIndex) {
-      console.log(`Piece ${pieceAIndex} is ABOVE ${pieceBIndex}`);
-      return 'vertical'; // A debe estar arriba de B
-    }
-    
-    console.log(`No valid connection found between ${pieceAIndex} and ${pieceBIndex}`);
-    // Si llegamos aquí, las piezas no son vecinas legítimas
-    return null;
-  }, []);
   
   // Inicializar las piezas si es necesario
   useEffect(() => {
@@ -1202,6 +486,30 @@ function Cube() {
                 });
             }
             
+            // Verificar inmediatamente si el puzzle está completado
+            if (newPieces[droppedPieceIndex].isPlacedInBox) {
+                // Contar cuántas piezas están en el grupo principal y están en la caja
+                const groupId = newPieces[droppedPieceIndex].groupId;
+                if (groupId !== undefined) {
+                    const piecesInMainGroup = newPieces.filter(p => 
+                        p.groupId === groupId && p.isPlacedInBox
+                    ).length;
+                    
+                    console.log(`Verificación inmediata: ${piecesInMainGroup}/${newPieces.length} piezas en grupo principal`);
+                    
+                    // Si todas las piezas están en el mismo grupo, activar victoria inmediatamente
+                    if (piecesInMainGroup === newPieces.length && !puzzleCompleted) {
+                        console.log("¡PUZZLE COMPLETADO INMEDIATAMENTE!");
+                        // No podemos llamar a setPuzzleCompleted aquí directamente
+                        // Lo haremos en un setTimeout para evitar conflictos de estado
+                        setTimeout(() => {
+                            setPuzzleCompleted(true);
+                            playSoundSafely(victorySound);
+                        }, 10);
+                    }
+                }
+            }
+            
             return newPieces;
         });
     }
@@ -1215,71 +523,42 @@ function Cube() {
         playSoundSafely(dropSound);
     }
 
-    // 5. Comprobar si el puzzle está completado (todas las piezas conectadas en un solo grupo)
-    if (didSnap || isInsideBox) {
-        setTimeout(() => {
-            // Usar setTimeout para asegurar que el estado ya está actualizado
-            const firstPiece = pieces[0];
-            if (firstPiece) {
-                const firstGroupId = firstPiece.groupId;
-                const allInSameGroup = pieces.every(piece => piece.groupId === firstGroupId);
-                const allInBox = pieces.every(piece => piece.isPlacedInBox);
-                
-                console.log("Comprobando victoria:", { 
-                    allInSameGroup, 
-                    allInBox, 
-                    puzzleCompleted,
-                    piecesGroups: pieces.map(p => p.groupId)
-                });
-                
-                if (allInSameGroup && allInBox && !puzzleCompleted) {
-                    console.log("¡PUZZLE COMPLETADO desde useEffect! Mostrando animación");
-                    setSnappedPieces({0: true, 1: true, 2: true, 3: true, 4: true, 5: true});
-                    // Usar audio con un pequeño retraso para un mejor efecto
-                    playSoundSafely(victorySound, 300);
-                }
-            }
-        }, 300); // Aumentar el tiempo para asegurar que el estado esté actualizado
-    }
-
-}, [pieces, puzzleBoxPos, puzzleBoxDim, pieceWidth, pieceHeight, snapSound, dropSound, playSoundSafely, pieceNeighborsMap, puzzleCompleted]);
+  }, [pieces, puzzleBoxPos, puzzleBoxDim, pieceWidth, pieceHeight, snapSound, dropSound, playSoundSafely, puzzleCompleted, victorySound]);
 
   // --- Drag Handlers ---
-  const handleGroupDragStart = useCallback((startIndex, startGroupId, pointerIntersection) => {
-     const basePiece = pieces[startIndex];
+  const handleGroupDragStart = useCallback((index, groupId, pointerIntersection) => {
+     const basePiece = pieces[index];
      // Prevent starting a new drag if one is active, or if the piece/group is invalid
-     if (!basePiece || startGroupId === null || draggedGroupInfo.isActive) return; 
-
-     const groupMemberOffsets = {};
-     const initialTargetPositions = {};
-     const currentGroupMembers = pieces.reduce((acc, p, idx) => {
-        if (p.groupId === startGroupId) acc.push({ piece: p, index: idx });
-        return acc;
-     }, []);
+     if (!basePiece || groupId === null || draggedGroupInfo.isActive) return;
 
      // Calculate offset from pointer to the base piece's origin (on the drag plane)
      const pointerOffset = new Vector3().subVectors(pointerIntersection, basePiece.position);
      pointerOffset.y = 0; // Ignore Y offset for planar dragging
 
-     // Calculate relative offsets of all group members from the base piece
-     currentGroupMembers.forEach(({ piece, index }) => {
-        const offset = new Vector3().subVectors(piece.position, basePiece.position);
-        groupMemberOffsets[index] = offset;
-        initialTargetPositions[index] = piece.position.clone(); // Start targets at current positions
+     const groupMemberOffsets = {};
+     const initialTargetPositions = {};
+     
+     // Find all pieces in the same group
+     pieces.forEach((p, i) => {
+       if (p.groupId === groupId) {
+         // Calculate offset of each piece in the group relative to the base piece
+         const offset = new Vector3().subVectors(basePiece.position, p.position);
+         groupMemberOffsets[i] = offset;
+         initialTargetPositions[i] = p.position.clone(); // Start targets at current positions
+       }
      });
      
-     console.log(`Starting drag for group ${startGroupId} with base piece ${startIndex}`);
+     console.log(`Starting drag for group ${groupId} with base piece ${index}`);
      // Set state to start the drag
      setDraggedGroupInfo({
-        groupId: startGroupId,
-        basePieceIndex: startIndex,
+        groupId: groupId,
+        basePieceIndex: index,
         pointerOffset: pointerOffset,
         offsets: groupMemberOffsets,
         targetPositions: initialTargetPositions, // Set initial targets
         isActive: true
      });
-
-  }, [pieces, draggedGroupInfo.isActive]); // Dependencies: pieces state and current drag status
+  }, [pieces, draggedGroupInfo.isActive]);
 
   const handleGroupDrag = useCallback((pointerIntersection) => {
      // Update target positions based on mouse movement during an active drag
@@ -1289,7 +568,6 @@ function Cube() {
      const newTargetPositions = {};
 
      // Calculate new base position based on pointer, elevated during drag
-     const basePieceOriginalY = pieces[basePieceIndex].position.y; // Maintain original Y as base
      const newBasePosX = pointerIntersection.x - pointerOffset.x;
      const newBasePosZ = pointerIntersection.z - pointerOffset.z;
      // Keep the group elevated slightly while dragging for visual clarity
@@ -1311,14 +589,13 @@ function Cube() {
         ...prev,
         targetPositions: newTargetPositions
      }));
-
-  }, [draggedGroupInfo, pieces]); // Dependencies: drag info and pieces state (for base piece Y)
+  }, [draggedGroupInfo, pieces]);
 
    // Add a useFrame hook within Cube to call handleGroupDrag
    useFrame(() => {
       if (draggedGroupInfo.isActive) {
          raycaster.setFromCamera(mouse, camera);
-         const plane = new ThreePlane(new Vector3(0, 1, 0), 0); // Drag plane at Y=0
+         const plane = new Plane(new Vector3(0, 1, 0), 0); // Drag plane at Y=0
          const intersection = new Vector3();
          // Update target positions if the ray intersects the plane
          if (raycaster.ray.intersectPlane(plane, intersection)) {
@@ -1393,20 +670,7 @@ function Cube() {
          // Si es cancelación, no necesitamos hacer nada, las piezas volverán a su posición original
          console.log(`Drag cancelled for group ${droppedGroupId}. Pieces should return.`);
      }
-}, [draggedGroupInfo, handlePiecePlacement]);
-  
-  // Manejar el movimiento de una pieza (Legacy - Keeping for potential non-drag updates)
-  const handlePieceMoved = useCallback((index, newPosition, isSnapped, isPlacedInBox) => {
-    // This might become redundant if handlePiecePlacement handles all state updates post-drag
-    // Keep for now in case of non-drag movements? (Currently none)
-    setPieces(prev => {
-      // ... (previous logic) ...
-    });
-    
-    if (isSnapped) {
-      // ... (previous logic) ...
-    }
-  }, []); 
+  }, [draggedGroupInfo, handlePiecePlacement]);
   
   // Reiniciar el juego
   const handleRestart = useCallback(() => {
@@ -1414,27 +678,34 @@ function Cube() {
     setSnappedPieces({});
     setPieces([]); // Clear pieces, useEffect will re-initialize
     setDraggedGroupInfo({ isActive: false, groupId: null, basePieceIndex: null, pointerOffset: new Vector3(), offsets: {}, targetPositions: {} }); // Reset drag state
-  }, []);
-
-  // Función para alternar el sonido
-  const toggleSound = useCallback((e) => {
-    e.stopPropagation();
-    setSoundEnabled(prev => !prev);
-  }, []);
-
+  }, [setPuzzleCompleted]);
+  
   // Comprobar si el puzzle está completo
   useEffect(() => {
-    const totalSnappedPieces = Object.keys(snappedPieces).length;
-    console.log(`Snapped pieces count: ${totalSnappedPieces}`, snappedPieces);
-    
-    if (totalSnappedPieces === 6 && !puzzleCompleted) {
-      console.log("¡PUZZLE COMPLETADO desde useEffect! Mostrando animación");
-      setPuzzleCompleted(true);
-      
-      // Usar audio con un pequeño retraso para un mejor efecto
-      playSoundSafely(victorySound, 300);
+    // Solo verificar cuando hay piezas colocadas, y el puzzle no está completado aún
+    if (pieces.length > 0 && !puzzleCompleted) {
+      // Verificar si todas las piezas están en el mismo grupo
+      const firstPiece = pieces[0];
+      if (firstPiece && firstPiece.groupId !== undefined) {
+        const firstGroupId = firstPiece.groupId;
+        
+        // Contar cuántas piezas están en el grupo principal y están en la caja
+        const piecesInMainGroup = pieces.filter(p => 
+            p.groupId === firstGroupId && p.isPlacedInBox
+        ).length;
+        
+        console.log(`Comprobando estado puzzle: ${piecesInMainGroup}/${pieces.length} piezas en grupo principal`);
+        
+        // Si todas las piezas están en el mismo grupo, activar victoria
+        if (piecesInMainGroup === pieces.length) {
+          console.log("¡PUZZLE COMPLETADO desde useEffect!");
+          setPuzzleCompleted(true);
+          setSnappedPieces({0: true, 1: true, 2: true, 3: true, 4: true, 5: true});
+          playSoundSafely(victorySound);
+        }
+      }
     }
-  }, [snappedPieces, puzzleCompleted, victorySound, playSoundSafely]);
+  }, [pieces, puzzleCompleted, victorySound, playSoundSafely, setPuzzleCompleted]);
 
   return (
     <group>
@@ -1451,10 +722,10 @@ function Cube() {
       {/* Piezas del puzzle */}
       {pieces.map((piece, index) => (
         <PuzzlePiece 
-          key={`${piece.groupId}-${index}`} // Key needs to be stable but unique if pieces array shuffles - include groupId?
+          key={`${piece.groupId}-${index}`}
           index={index}
-          initialPosition={piece.position} // Pass the *static* state position
-          position={piece.position} // Pass the same for initial spring setup
+          initialPosition={piece.position}
+          position={piece.position}
           textureOffset={piece.textureOffset}
           textureSize={piece.textureSize}
           size={piece.size}
@@ -1463,46 +734,20 @@ function Cube() {
           isSnapped={piece.isSnapped}
           isPlacedInBox={piece.isPlacedInBox}
           correctPosition={correctPositions[index]}
-          // onPieceMoved={handlePieceMoved} // Replaced by group handlers
           soundEnabled={soundEnabled}
-          // Pass additional props
-          allPieces={pieces} // Pass current pieces state
+          allPieces={pieces}
           pieceWidth={pieceWidth}
           pieceHeight={pieceHeight}
           checkPiecesConnection={checkPiecesConnection}
           puzzleBoxPosition={puzzleBoxPos}
           puzzleBoxSize={puzzleBoxDim}
-          // Group Drag Props
           onGroupDragStart={handleGroupDragStart}
           onGroupDragEnd={handleGroupDragEnd}
-          draggedGroupInfo={draggedGroupInfo} // Pass down the drag state
-          // Pass Sound Props
-          pickSound={pickSound} // Pass the sound object
-          playSoundSafely={playSoundSafely} // Pass the function
+          draggedGroupInfo={draggedGroupInfo}
+          pickSound={pickSound}
+          playSoundSafely={playSoundSafely}
         />
       ))}
-      
-      {/* Mensaje de victoria */}
-      <VictoryMessage 
-        visible={puzzleCompleted} 
-        onRestart={handleRestart}
-      />
-      
-      {/* Botón para activar/desactivar sonido - con mejor visibilidad */}
-      <group position={[4.5, 2, -1]} onClick={toggleSound}>
-        <mesh>
-          <planeGeometry args={[1.2, 0.5]} />
-          <meshBasicMaterial color={soundEnabled ? 0x00aa00 : 0xff0000} transparent opacity={0.9} />
-        </mesh>
-        <TextPlane
-          text={soundEnabled ? "Sonido: ON" : "Sonido: OFF"}
-          position={[0, 0, 0.01]}
-          scale={[1, 0.4, 1]}
-          fontSize={20}
-          textColor={soundEnabled ? "#ffffff" : "#ffffff"}
-          bgColor={null}
-        />
-      </group>
     </group>
   );
 }
