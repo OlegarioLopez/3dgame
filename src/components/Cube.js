@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
 import { 
   Vector2, 
@@ -17,6 +17,13 @@ const SOUNDS = {
   SNAP: '/sounds/coin-recieved-230517.mp3',
   VICTORY: '/sounds/energy-drink-effect-230559.mp3'
 };
+
+// Objetos estáticos para reutilizar (mejora rendimiento)
+const ZERO_VECTOR = new Vector3(0, 0, 0);
+const TEMP_VECTOR1 = new Vector3(); // Para uso en handleGroupDragStart
+const TEMP_VECTOR2 = new Vector3(); // Para uso en handleGroupDrag
+const TEMP_VECTOR3 = new Vector3(); // Para uso en otras funciones
+const DRAG_PLANE = new Plane(new Vector3(0, 1, 0), 0);
 
 // Mapa de vecinos: define qué piezas son vecinas legítimas
 const pieceNeighborsMap = {
@@ -46,6 +53,19 @@ const checkPiecesConnection = (piece1Index, piece2Index) => {
   
   // Comprueba si piece2Index aparece como vecino de piece1Index
   return Object.values(piece1Neighbors).includes(piece2Index);
+};
+
+// Función auxiliar para verificar si un punto está dentro de un rectángulo
+const isPointInBox = (point, boxCenter, boxDimensions) => {
+  const halfWidth = boxDimensions.width / 2;
+  const halfHeight = boxDimensions.height / 2;
+  
+  return (
+    point.x >= boxCenter.x - halfWidth &&
+    point.x <= boxCenter.x + halfWidth &&
+    point.z >= boxCenter.z - halfHeight &&
+    point.z <= boxCenter.z + halfHeight
+  );
 };
 
 function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
@@ -264,252 +284,189 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
   // --- Snapping and Placement Logic (Called by onGroupDragEnd) ---
   const handlePiecePlacement = useCallback((droppedPieceIndex, finalDropPosition) => {
     const droppedPiece = pieces[droppedPieceIndex];
-    if (!droppedPiece) return;
-
-    // Márgenes de tolerancia para considerar piezas cercanas
-    const horizontalTolerance = pieceWidth * 1.2;
-    const verticalTolerance = pieceHeight * 1.2;
+    if (!droppedPiece) return; // Early return if piece doesn't exist
     
-    // Distancias mínimas para evitar que se consideren piezas superpuestas
-    const minHorizontalDistance = pieceWidth * 0.6;
-    const minVerticalDistance = pieceHeight * 0.6;
-
-    const puzzleBoxBounds = {
-        minX: puzzleBoxPos.x - puzzleBoxDim.width / 2,
-        maxX: puzzleBoxPos.x + puzzleBoxDim.width / 2,
-        minZ: puzzleBoxPos.z - puzzleBoxDim.height / 2,
-        maxZ: puzzleBoxPos.z + puzzleBoxDim.height / 2,
-    };
-
-    let targetPosition = finalDropPosition.clone();
-    targetPosition.y = 0.101; // Ensure correct height
-    let didSnap = false;
+    // 1. Determinar si la pieza está dentro de la caja del puzzle (si es así, marcarla como isPlacedInBox)
+    const isInsideBox = isPointInBox(
+        finalDropPosition, 
+        puzzleBoxPos, 
+        { width: puzzleBoxDim.width, height: puzzleBoxDim.height }
+    );
+    
+    // 2. Comprobar si debe hacer "snap" con una pieza vecina (si es así, moverla a una posición exacta)
+    let bestDistance = Infinity;
+    let bestNeighbor = null;
+    let bestSnapPosition = null;
     let neighborToSnapTo = null;
-
-    // 1. Verificar si la pieza está dentro de la caja
-    const isInsideBox = 
-        finalDropPosition.x >= puzzleBoxBounds.minX &&
-        finalDropPosition.x <= puzzleBoxBounds.maxX &&
-        finalDropPosition.z >= puzzleBoxBounds.minZ &&
-        finalDropPosition.z <= puzzleBoxBounds.maxZ;
-
-    if (isInsideBox) {
-        // 2. Buscar snap con vecinos ya colocados en la caja
-        // Buscaremos el vecino más cercano que sea hermano legítimo
-        let bestNeighbor = null;
-        let bestDistance = Infinity;
-        let bestSnapPosition = null;
-
-        // Vecinos legítimos de la pieza según la matriz
-        const neighbors = pieceNeighborsMap[droppedPieceIndex];
-        console.log(`Legitimate neighbors for piece ${droppedPieceIndex}:`, neighbors);
-
-        // Para cada vecino posible, verificar si está colocado y calcular distancia
-        Object.entries(neighbors).forEach(([direction, neighborIndex]) => {
+    let didSnap = false; // Inicializar explícitamente a false
+    
+    // Si no está dentro de la caja, no verificamos snap (early return)
+    if (!isInsideBox) {
+        setPieces(currentPieces => {
+            const newPieces = [...currentPieces];
+            
+            // Actualizar estado de la pieza
+            newPieces[droppedPieceIndex] = {
+                ...newPieces[droppedPieceIndex],
+                position: finalDropPosition, // Actualizar la posición
+                isPlacedInBox: false // Marcar como fuera de la caja
+            };
+            
+            return newPieces;
+        });
+        return;
+    }
+    
+    // 3. Buscar piezas vecinas a las que podría hacer snap
+    // 2A. Primero, comprobar si la pieza puede hacer snap con alguna de sus piezas vecinas válidas
+    // según la matriz de relaciones del puzzle (solo dentro de la caja del puzzle)
+    const currentPiece = pieces[droppedPieceIndex];
+    const currentPieceGroupId = currentPiece.groupId;
+    
+    // Tolerancias para snap
+    const horizontalTolerance = pieceWidth * 1.2; // Aumentado para mayor tolerancia
+    const verticalTolerance = pieceHeight * 1.2; // Aumentado para mayor tolerancia
+    const minHorizontalDistance = pieceWidth * 0.05; // Reducido para permitir piezas más cercanas
+    const minVerticalDistance = pieceHeight * 0.05; // Reducido para permitir piezas más cercanas
+    
+    // Verificar piezas vecinas según el diseño del puzzle (Estrategia: buscar piezas a las que
+    // debería conectarse según el diseño)
+    const neighbors = pieceNeighborsMap[droppedPieceIndex];
+    if (neighbors) {
+        console.log(`Checking snap for piece ${droppedPieceIndex}, neighbors:`, neighbors);
+        const directionChecks = Object.entries(neighbors);
+        
+        for (const [direction, neighborIndex] of directionChecks) {
             const neighborPiece = pieces[neighborIndex];
             
-            // Verificar que el vecino existe, está colocado y es de otro grupo
-            if (!neighborPiece || !neighborPiece.isPlacedInBox || 
-                neighborPiece.groupId === droppedPiece.groupId) {
-                return;
+            // Descartar caso si el vecino no existe o es del mismo grupo ya
+            if (!neighborPiece || neighborPiece.groupId === currentPieceGroupId) {
+                console.log(`Skipping neighbor ${neighborIndex}: ${!neighborPiece ? 'does not exist' : 'already in same group'}`);
+                continue;
             }
-
-            // Calcular vector desde el centro del vecino al centro de la pieza
+            
+            // Solo considerar vecinos que estén en la caja del puzzle
+            if (!neighborPiece.isPlacedInBox) {
+                console.log(`Skipping neighbor ${neighborIndex}: not in box`);
+                continue;
+            }
+            
+            // Crear un nuevo vector para evitar interferencias con otros cálculos
             const vecToPiece = new Vector3().subVectors(finalDropPosition, neighborPiece.position);
+            
+            console.log(`Checking neighbor ${neighborIndex} in direction ${direction}, vector: [${vecToPiece.x.toFixed(2)}, ${vecToPiece.z.toFixed(2)}]`);
             
             // Para conexiones horizontales (left/right)
             if (direction === 'left' || direction === 'right') {
                 // Verificar que la separación en Z (vertical) es pequeña
-                if (Math.abs(vecToPiece.z) < verticalTolerance) {
-                    // Calcular la distancia real en X (horizontal)
-                    const horizontalDistance = Math.abs(vecToPiece.x);
+                if (Math.abs(vecToPiece.z) > verticalTolerance) {
+                    console.log(`Vertical separation too large: ${Math.abs(vecToPiece.z).toFixed(2)} > ${verticalTolerance.toFixed(2)}`);
+                    continue;
+                }
+                
+                // Calcular la distancia real en X (horizontal)
+                const horizontalDistance = Math.abs(vecToPiece.x);
+                
+                console.log(`Horizontal check with piece ${neighborIndex} (${direction}): distance=${horizontalDistance.toFixed(2)}, tolerance=${horizontalTolerance.toFixed(2)}, minDistance=${minHorizontalDistance.toFixed(2)}`);
+                
+                // Verificar que la pieza esté en el lado correcto según la matriz
+                // Si direction es 'left', el vecino debe estar a la izquierda, por lo que el vector debe apuntar a la derecha (x positivo)
+                // Si direction es 'right', el vecino debe estar a la derecha, por lo que el vector debe apuntar a la izquierda (x negativo)
+                const isCorrectSide = (direction === 'left' && vecToPiece.x > 0) || 
+                                      (direction === 'right' && vecToPiece.x < 0);
+                
+                if (!isCorrectSide) {
+                    console.log(`Skipping snap: piece ${droppedPieceIndex} is not on the correct side (${direction}) of piece ${neighborIndex}. x=${vecToPiece.x.toFixed(2)}`);
+                    continue; // Usar continue en lugar de return para seguir verificando otras piezas
+                }
+                
+                // Si está dentro de la tolerancia, no demasiado cerca y es mejor que la anterior
+                if (horizontalDistance < horizontalTolerance && 
+                    horizontalDistance > minHorizontalDistance &&
+                    horizontalDistance < bestDistance) {
+                    bestDistance = horizontalDistance;
+                    bestNeighbor = neighborPiece;
+                    neighborToSnapTo = neighborIndex;
                     
-                    console.log(`Horizontal check with piece ${neighborIndex} (${direction}): distance=${horizontalDistance}, tolerance=${horizontalTolerance}, minDistance=${minHorizontalDistance}`);
+                    // Calcular posición exacta de snap
+                    bestSnapPosition = new Vector3().copy(neighborPiece.position);
                     
-                    // Verificar que la pieza esté en el lado correcto según la matriz
-                    const isCorrectSide = (direction === 'left' && vecToPiece.x > 0) || 
-                                         (direction === 'right' && vecToPiece.x < 0);
-                    
-                    if (!isCorrectSide) {
-                        console.log(`Skipping snap: piece ${droppedPieceIndex} is not on the correct side (${direction}) of piece ${neighborIndex}`);
-                        return;
+                    // Ajustar X según dirección
+                    if (direction === 'left') { // Si el vecino debe estar a la izquierda
+                        bestSnapPosition.x += pieceWidth;
+                    } else { // Si el vecino debe estar a la derecha
+                        bestSnapPosition.x -= pieceWidth;
                     }
                     
-                    // Si está dentro de la tolerancia, no demasiado cerca y es mejor que la anterior
-                    if (horizontalDistance < horizontalTolerance && 
-                        horizontalDistance > minHorizontalDistance &&
-                        horizontalDistance < bestDistance) {
-                        bestDistance = horizontalDistance;
-                        bestNeighbor = neighborPiece;
-                        
-                        // Calcular posición exacta de snap
-                        bestSnapPosition = new Vector3().copy(neighborPiece.position);
-                        
-                        // Ajustar X según dirección
-                        if (direction === 'left') { // Si el vecino debe estar a la izquierda
-                            bestSnapPosition.x += pieceWidth;
-                        } else { // Si el vecino debe estar a la derecha
-                            bestSnapPosition.x -= pieceWidth;
-                        }
-                        
-                        console.log(`Found potential horizontal snap at ${bestSnapPosition.x}, ${bestSnapPosition.z}`);
-                    }
+                    console.log(`Found potential horizontal snap at ${bestSnapPosition.x.toFixed(2)}, ${bestSnapPosition.z.toFixed(2)}`);
                 }
             }
             // Para conexiones verticales (top/bottom)
             else if (direction === 'top' || direction === 'bottom') {
                 // Verificar que la separación en X (horizontal) es pequeña
-                if (Math.abs(vecToPiece.x) < horizontalTolerance) {
-                    // Calcular la distancia real en Z (vertical)
-                    const verticalDistance = Math.abs(vecToPiece.z);
+                if (Math.abs(vecToPiece.x) > horizontalTolerance) {
+                    console.log(`Horizontal separation too large: ${Math.abs(vecToPiece.x).toFixed(2)} > ${horizontalTolerance.toFixed(2)}`);
+                    continue;
+                }
+                
+                // Calcular la distancia real en Z (vertical)
+                const verticalDistance = Math.abs(vecToPiece.z);
+                
+                console.log(`Vertical check with piece ${neighborIndex} (${direction}): distance=${verticalDistance.toFixed(2)}, tolerance=${verticalTolerance.toFixed(2)}, minDistance=${minVerticalDistance.toFixed(2)}`);
+                
+                // Verificar que la pieza esté en el lado correcto según la matriz
+                // La relación es desde la perspectiva del vecino, no de la pieza que estamos moviendo
+                // Si direction es 'top', significa que el vecino considera a nuestra pieza como "arriba",
+                // por lo que debemos estar por encima (z menor, vector negativo)
+                // Si direction es 'bottom', significa que el vecino considera a nuestra pieza como "abajo",
+                // por lo que debemos estar por debajo (z mayor, vector positivo)
+                const isCorrectSide = (direction === 'top' && vecToPiece.z < 0) || 
+                                      (direction === 'bottom' && vecToPiece.z > 0);
+                
+                if (!isCorrectSide) {
+                    console.log(`Skipping snap: piece ${droppedPieceIndex} is not on the correct side (${direction}) of piece ${neighborIndex}. z=${vecToPiece.z.toFixed(2)}`);
+                    continue; // Usar continue en lugar de return para seguir verificando
+                }
+                
+                // Si está dentro de la tolerancia, no demasiado cerca y es mejor que la anterior
+                if (verticalDistance < verticalTolerance && 
+                    verticalDistance > minVerticalDistance &&
+                    verticalDistance < bestDistance) {
+                    bestDistance = verticalDistance;
+                    bestNeighbor = neighborPiece;
+                    neighborToSnapTo = neighborIndex;
                     
-                    console.log(`Vertical check with piece ${neighborIndex} (${direction}): distance=${verticalDistance}, tolerance=${verticalTolerance}, minDistance=${minVerticalDistance}`);
+                    // Calcular posición exacta de snap
+                    bestSnapPosition = new Vector3().copy(neighborPiece.position);
                     
-                    // Verificar que la pieza esté en el lado correcto según la matriz
-                    const isCorrectSide = (direction === 'top' && vecToPiece.z < 0) || 
-                                         (direction === 'bottom' && vecToPiece.z > 0);
-                    
-                    if (!isCorrectSide) {
-                        console.log(`Skipping snap: piece ${droppedPieceIndex} is not on the correct side (${direction}) of piece ${neighborIndex}`);
-                        return;
+                    // Ajustar Z según dirección - CORREGIDO
+                    if (direction === 'top') { // Si el vecino está en dirección 'top', significa que debe ir ARRIBA de él
+                        // Si la pieza vecina dice que somos "top", significa que somos su vecino SUPERIOR
+                        // Por lo tanto, debemos colocarnos ARRIBA del vecino (z menor)
+                        bestSnapPosition.z -= pieceHeight; // RESTAR para mover hacia arriba
+                        console.log(`FIXED: Piece should go ABOVE neighbor (${direction}) - Z decreased to ${bestSnapPosition.z.toFixed(2)}`);
+                    } else if (direction === 'bottom') { // Si el vecino está en dirección 'bottom', significa que debe ir DEBAJO de él
+                        // Si la pieza vecina dice que somos "bottom", significa que somos su vecino INFERIOR
+                        // Por lo tanto, debemos colocarnos DEBAJO del vecino (z mayor)
+                        bestSnapPosition.z += pieceHeight; // SUMAR para mover hacia abajo
+                        console.log(`FIXED: Piece should go BELOW neighbor (${direction}) - Z increased to ${bestSnapPosition.z.toFixed(2)}`);
                     }
                     
-                    // Si está dentro de la tolerancia, no demasiado cerca y es mejor que la anterior
-                    if (verticalDistance < verticalTolerance && 
-                        verticalDistance > minVerticalDistance &&
-                        verticalDistance < bestDistance) {
-                        bestDistance = verticalDistance;
-                        bestNeighbor = neighborPiece;
-                        
-                        // Calcular posición exacta de snap
-                        bestSnapPosition = new Vector3().copy(neighborPiece.position);
-                        
-                        // CORRECCIÓN INVERTIDA COMPLETAMENTE: Ajustar Z según dirección
-                        if (direction === 'top') { // Si el vecino debe estar arriba
-                            // La pieza debe ir ARRIBA (z menor)
-                            bestSnapPosition.z -= pieceHeight; // RESTAR para mover hacia arriba
-                            console.log(`FIXED: Piece should go ABOVE neighbor (${direction}) - Z decreased to ${bestSnapPosition.z}`);
-                        } else if (direction === 'bottom') { // Si el vecino debe estar abajo
-                            // La pieza debe ir ABAJO (z mayor)
-                            bestSnapPosition.z += pieceHeight; // SUMAR para mover hacia abajo
-                            console.log(`FIXED: Piece should go BELOW neighbor (${direction}) - Z increased to ${bestSnapPosition.z}`);
-                        }
-                        
-                        console.log(`Found potential vertical snap at ${bestSnapPosition.x}, ${bestSnapPosition.z}`);
-                    }
+                    console.log(`Found potential vertical snap at ${bestSnapPosition.x.toFixed(2)}, ${bestSnapPosition.z.toFixed(2)}`);
                 }
             }
-        });
-
-        // También considerar el caso inverso (la pieza vecina busca a esta)
-        pieces.forEach((otherPiece, otherIndex) => {
-            if (!otherPiece.isPlacedInBox || otherPiece.groupId === droppedPiece.groupId) {
-                return;
-            }
-            
-            const otherNeighbors = pieceNeighborsMap[otherIndex];
-            
-            // Verificar si la pieza actual es vecina legítima de la otra pieza
-            let connectionDirection = null;
-            Object.entries(otherNeighbors).forEach(([dir, idx]) => {
-                if (idx === droppedPieceIndex) {
-                    connectionDirection = dir;
-                }
-            });
-            
-            if (!connectionDirection) return;
-            
-            // Calcular vector desde el centro de la otra pieza al centro de esta
-            const vecToPiece = new Vector3().subVectors(finalDropPosition, otherPiece.position);
-            
-            // Para conexiones horizontales (left/right)
-            if (connectionDirection === 'left' || connectionDirection === 'right') {
-                // Verificar que la separación en Z (vertical) es pequeña
-                if (Math.abs(vecToPiece.z) < verticalTolerance) {
-                    const horizontalDistance = Math.abs(vecToPiece.x);
-                    
-                    console.log(`Reverse horizontal check with piece ${otherIndex} (${connectionDirection}): distance=${horizontalDistance}, tolerance=${horizontalTolerance}, minDistance=${minHorizontalDistance}`);
-                    
-                    // Verificar que la pieza esté en el lado correcto según la matriz
-                    const isCorrectSide = (connectionDirection === 'left' && vecToPiece.x < 0) || 
-                                         (connectionDirection === 'right' && vecToPiece.x > 0);
-                    
-                    if (!isCorrectSide) {
-                        console.log(`Skipping reverse snap: piece ${droppedPieceIndex} is not on the correct side (${connectionDirection}) of piece ${otherIndex}`);
-                        return;
-                    }
-                    
-                    // Añadir verificación de distancia mínima
-                    if (horizontalDistance < horizontalTolerance && 
-                        horizontalDistance > minHorizontalDistance && 
-                        horizontalDistance < bestDistance) {
-                        bestDistance = horizontalDistance;
-                        bestNeighbor = otherPiece;
-                        
-                        bestSnapPosition = new Vector3().copy(otherPiece.position);
-                        if (connectionDirection === 'right') { // Si esta pieza debe estar a la derecha
-                            bestSnapPosition.x += pieceWidth;
-                        } else { // Si esta pieza debe estar a la izquierda
-                            bestSnapPosition.x -= pieceWidth;
-                        }
-                        
-                        console.log(`Found potential reverse horizontal snap at ${bestSnapPosition.x}, ${bestSnapPosition.z}`);
-                    }
-                }
-            }
-            // Para conexiones verticales (top/bottom)
-            else if (connectionDirection === 'top' || connectionDirection === 'bottom') {
-                // Verificar que la separación en X (horizontal) es pequeña
-                if (Math.abs(vecToPiece.x) < horizontalTolerance) {
-                    const verticalDistance = Math.abs(vecToPiece.z);
-                    
-                    console.log(`Reverse vertical check with piece ${otherIndex} (${connectionDirection}): distance=${verticalDistance}, tolerance=${verticalTolerance}, minDistance=${minVerticalDistance}`);
-                    
-                    // Verificar que la pieza esté en el lado correcto según la matriz
-                    const isCorrectSide = (connectionDirection === 'top' && vecToPiece.z > 0) || 
-                                         (connectionDirection === 'bottom' && vecToPiece.z < 0);
-                    
-                    if (!isCorrectSide) {
-                        console.log(`Skipping reverse snap: piece ${droppedPieceIndex} is not on the correct side (${connectionDirection}) of piece ${otherIndex}`);
-                        return;
-                    }
-                    
-                    // Añadir verificación de distancia mínima
-                    if (verticalDistance < verticalTolerance && 
-                        verticalDistance > minVerticalDistance && 
-                        verticalDistance < bestDistance) {
-                        bestDistance = verticalDistance;
-                        bestNeighbor = otherPiece;
-                        
-                        bestSnapPosition = new Vector3().copy(otherPiece.position);
-                        
-                        // CORRECCIÓN INVERTIDA COMPLETAMENTE: Ajustar Z según dirección
-                        if (connectionDirection === 'bottom') { // Si la pieza actual debe estar abajo del vecino
-                            // La pieza debe ir ABAJO (z mayor)
-                            bestSnapPosition.z += pieceHeight; // SUMAR para mover hacia abajo
-                            console.log(`FIXED: Piece should go BELOW neighbor (reverse-${connectionDirection}) - Z increased to ${bestSnapPosition.z}`);
-                        } else if (connectionDirection === 'top') { // Si la pieza actual debe estar arriba del vecino
-                            // La pieza debe ir ARRIBA (z menor) 
-                            bestSnapPosition.z -= pieceHeight; // RESTAR para mover hacia arriba
-                            console.log(`FIXED: Piece should go ABOVE neighbor (reverse-${connectionDirection}) - Z decreased to ${bestSnapPosition.z}`);
-                        }
-                        
-                        console.log(`Found potential reverse vertical snap at ${bestSnapPosition.x}, ${bestSnapPosition.z}`);
-                    }
-                }
-            }
-        });
-
-        // Aplicar el mejor snap encontrado
-        if (bestNeighbor && bestSnapPosition) {
-            targetPosition.copy(bestSnapPosition);
-            didSnap = true;
-            neighborToSnapTo = bestNeighbor;
-            console.log(`Piece ${droppedPieceIndex} snapped to neighbor ${pieces.indexOf(bestNeighbor)} at position ${targetPosition.x}, ${targetPosition.z}`);
         }
     }
 
-    // 3. Actualizar estado para la pieza/grupo
+    // Comprobar si se encontró un snap válido
+    if (bestNeighbor && bestSnapPosition) {
+        didSnap = true;
+        console.log(`Piece ${droppedPieceIndex} will snap to neighbor ${pieces.indexOf(bestNeighbor)} at position ${bestSnapPosition.x.toFixed(2)}, ${bestSnapPosition.z.toFixed(2)}`);
+    } else {
+        console.log(`No valid snap found for piece ${droppedPieceIndex}`);
+    }
+
+    // 4. Actualizar estado para la pieza/grupo
     if (isInsideBox) {
         const droppedGroupId = droppedPiece.groupId;
         
@@ -527,8 +484,10 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
             
             // Si hubo snap, calcular y aplicar offset
             if (didSnap) {
-                const basePieceOffset = new Vector3().subVectors(targetPosition, finalDropPosition);
+                const basePieceOffset = new Vector3().subVectors(bestSnapPosition, finalDropPosition);
                 basePieceOffset.y = 0; // Solo movimiento planar
+                
+                console.log(`Applying snap offset: ${basePieceOffset.x.toFixed(2)}, ${basePieceOffset.z.toFixed(2)} to group ${droppedGroupId}`);
                 
                 // Aplicar nueva posición y estado a todas las piezas del grupo
                 groupIndices.forEach(idx => {
@@ -545,11 +504,12 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
                 });
                 
                 // Manejar fusión de grupos si se hizo snap a un grupo diferente
-                if (neighborToSnapTo && neighborToSnapTo.groupId !== droppedGroupId) {
+                if (neighborToSnapTo !== null && bestNeighbor && bestNeighbor.groupId !== droppedGroupId) {
+                    console.log(`Merging group ${droppedGroupId} into group ${bestNeighbor.groupId}`);
+                    const targetGroupId = bestNeighbor.groupId;
                     // Asignar todas las piezas al mismo grupo ahora mismo
-                    // (esto reemplaza a la llamada externa a mergeGroups)
                     groupIndices.forEach(idx => {
-                        newPieces[idx].groupId = neighborToSnapTo.groupId;
+                        newPieces[idx].groupId = targetGroupId;
                     });
                 }
             } else {
@@ -590,22 +550,31 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
         });
     }
 
-    // 4. Reproducir sonido CORREGIDO
-    if (didSnap && neighborToSnapTo) {
-        // Solo reproducir sonido si realmente hizo snap a un vecino
+    // 5. Reproducir sonido cuando hay snap
+    if (didSnap && bestNeighbor) {
+        console.log(`Playing snap sound for piece ${droppedPieceIndex}`);
         playSoundSafely(snapSound);
+    } else {
+        // Si no hubo snap pero se soltó la pieza, NO reproducir ningún sonido
+        console.log(`No snap detected, piece ${droppedPieceIndex} dropped silently`);
+        // Eliminada la reproducción del sonido de caída (dropSound)
     }
 
-  }, [pieces, puzzleBoxPos, puzzleBoxDim, pieceWidth, pieceHeight, snapSound, playSoundSafely, puzzleCompleted, victorySound]);
+  }, [pieces, puzzleBoxPos, puzzleBoxDim, pieceWidth, pieceHeight, snapSound, playSoundSafely, puzzleCompleted, victorySound, soundEnabled]);
 
   // --- Drag Handlers ---
   const handleGroupDragStart = useCallback((index, groupId, pointerIntersection) => {
+     console.log("handleGroupDragStart called with", index, groupId); // Debug
      const basePiece = pieces[index];
      // Prevent starting a new drag if one is active, or if the piece/group is invalid
-     if (!basePiece || groupId === null || draggedGroupInfo.isActive) return;
+     if (!basePiece || groupId === null || draggedGroupInfo.isActive) {
+       console.log("Drag start prevented:", !basePiece ? "no base piece" : groupId === null ? "no group id" : "drag already active"); // Debug
+       return;
+     }
 
      // Calculate offset from pointer to the base piece's origin (on the drag plane)
-     const pointerOffset = new Vector3().subVectors(pointerIntersection, basePiece.position);
+     // Reutilizamos TEMP_VECTOR1 en lugar de crear un nuevo Vector3
+     const pointerOffset = TEMP_VECTOR1.subVectors(pointerIntersection, basePiece.position).clone();
      pointerOffset.y = 0; // Ignore Y offset for planar dragging
 
      const groupMemberOffsets = {};
@@ -617,13 +586,14 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
          // Calculate offset de cada pieza relativo a la pieza base
          // Offset = posición_base - posición_pieza
          // Esto representa cuánto hay que mover desde la pieza actual para llegar a la base
+         // Creamos una nueva instancia solo cuando necesitamos guardarla
          const offset = new Vector3().subVectors(p.position, basePiece.position);
          groupMemberOffsets[i] = offset;
          initialTargetPositions[i] = p.position.clone(); // Start targets at current positions
        }
      });
      
-     console.log(`Starting drag for group ${groupId} with base piece ${index}`);
+     console.log(`Starting drag for group ${groupId} with base piece ${index}. Initial positions:`, initialTargetPositions);
      // Set state to start the drag
      setDraggedGroupInfo({
         groupId: groupId,
@@ -647,6 +617,8 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
      const newBasePosZ = pointerIntersection.z - pointerOffset.z;
      // Keep the group elevated slightly while dragging for visual clarity
      const dragElevation = 0.3; 
+     
+     // Reutilizamos un vector para la posición base
      const newBasePos = new Vector3(newBasePosX, dragElevation, newBasePosZ);
 
      // Primero establecemos la posición de la pieza base
@@ -659,12 +631,13 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
          
         const relativeOffset = offsets[index];
         // Añadimos el offset a la posición base - las piezas mantienen su posición relativa
-        const targetPos = new Vector3().addVectors(newBasePos, relativeOffset);
+        // Reutilizamos TEMP_VECTOR2 para el cálculo y creamos una nueva instancia para guardar
+        const targetPos = TEMP_VECTOR2.copy(newBasePos).add(relativeOffset).clone();
         targetPos.y = dragElevation; // Mantener misma elevación para todas las piezas
         newTargetPositions[index] = targetPos;
      });
 
-     // Update the state with new target positions
+     // Update the state with new target positions - evitamos recrear todo el objeto
      setDraggedGroupInfo(prev => ({
         ...prev,
         targetPositions: newTargetPositions
@@ -674,12 +647,20 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
    // Add a useFrame hook within Cube to call handleGroupDrag
    useFrame(() => {
       if (draggedGroupInfo.isActive) {
+         // Throttling desactivado temporalmente para diagnosticar problema
+         /*
+         const now = performance.now();
+         if (now - throttleRef.current.lastUpdateTime < throttleRef.current.throttleDelay) {
+           return;
+         }
+         throttleRef.current.lastUpdateTime = now;
+         */
+         
          raycaster.setFromCamera(mouse, camera);
-         const plane = new Plane(new Vector3(0, 1, 0), 0); // Drag plane at Y=0
          const intersection = new Vector3();
          // Update target positions if the ray intersects the plane
-         if (raycaster.ray.intersectPlane(plane, intersection)) {
-            handleGroupDrag(intersection); 
+         if (raycaster.ray.intersectPlane(DRAG_PLANE, intersection)) {
+            handleGroupDrag(intersection);
          }
       }
    });
@@ -802,11 +783,21 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
     }
   }, [pieces, puzzleCompleted, victorySound, playSoundSafely, setPuzzleCompleted]);
 
-  // Escuchar evento externo de reseteo del puzzle
+  // Referencia para funciones estables
+  const stableCallbacks = useRef({
+    handleRestart: null
+  }).current;
+  
+  // Actualizar referencias de funciones estables cuando cambien
+  useEffect(() => {
+    stableCallbacks.handleRestart = handleRestart;
+  }, [handleRestart]);
+  
+  // Escuchar evento externo de reseteo del puzzle usando referencias estables
   useEffect(() => {
     const handleResetEvent = () => {
       console.log("Recibido evento de reseteo del puzzle");
-      handleRestart();
+      stableCallbacks.handleRestart();
     };
     
     // Agregar el event listener
@@ -816,7 +807,7 @@ function Cube({ puzzleCompleted, setPuzzleCompleted, soundEnabled }) {
     return () => {
       window.removeEventListener('resetPuzzle', handleResetEvent);
     };
-  }, [handleRestart]);
+  }, []); // Sin dependencias - usamos referencias estables
 
   return (
     <group>

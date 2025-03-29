@@ -3,6 +3,10 @@ import { Vector3, TextureLoader, RepeatWrapping, MeshStandardMaterial, BufferAtt
 import { useThree, useFrame, useLoader } from '@react-three/fiber';
 import { useSpring, animated } from '@react-spring/three';
 
+// Objetos estáticos compartidos para mejorar el rendimiento
+const TEMP_VECTOR_PIECE = new Vector3();
+const DRAG_PLANE = new Plane(new Vector3(0, 1, 0), 0);
+
 // Componente para una pieza individual del puzzle
 function PuzzlePiece({ 
   position, 
@@ -352,8 +356,10 @@ function PuzzlePiece({
   // Manejadores de eventos simplificados
   const onPointerDown = useCallback((e) => {
     e.stopPropagation();
+    console.log("onPointerDown", index); // Debug
     const pieceData = allPieces[index];
     if (pieceData) {
+      console.log("Setting isDraggingThisPiece to true for", index); // Debug
       setIsDraggingThisPiece(true);
       onGroupDragStart(index, pieceData.groupId, e.point); 
 
@@ -376,9 +382,8 @@ function PuzzlePiece({
       // Notify Cube that the drag attempt ended for this group
       // Cube needs the final pointer position on the Y=0 plane for accurate placement checks
       raycaster.setFromCamera(mouse, camera);
-      const plane = new Plane(new Vector3(0, 1, 0), 0);
       const finalIntersection = new Vector3();
-      if (raycaster.ray.intersectPlane(plane, finalIntersection)) {
+      if (raycaster.ray.intersectPlane(DRAG_PLANE, finalIntersection)) {
         // Pass the index of the piece dropped and the intersection point
         onGroupDragEnd(index, finalIntersection); 
       } else {
@@ -392,10 +397,7 @@ function PuzzlePiece({
       api.start({ 
         scale: [1, 1, 1], // Usar array en lugar de escalar
         config: { mass: 1, tension: 170, friction: 26 } // Reset to default config
-       }); 
-      
-      // Snapping logic is now handled centrally in Cube's handlePiecePlacement,
-      // triggered by the onGroupDragEnd call above.
+      }); 
     }
   }, [
     isDraggingThisPiece, // Essential dependency
@@ -462,7 +464,10 @@ function PuzzlePiece({
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp} // Treat cancel like up - triggers onGroupDragEnd
-      
+      onClick={(e) => {
+        console.log("Click on piece", index);
+        e.stopPropagation();
+      }}
       // DESACTIVAMOS onPointerLeave que está causando problemas con el arrastre
       // onPointerLeave={onPointerLeave} // Handle pointer leaving canvas - triggers onGroupDragEnd(..., true)
     >
@@ -471,4 +476,5 @@ function PuzzlePiece({
   );
 }
 
-export default PuzzlePiece; 
+// Envolvemos el componente con React.memo para evitar renderizados innecesarios
+export default React.memo(PuzzlePiece); 
